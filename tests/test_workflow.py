@@ -8,7 +8,14 @@ from app.agent.demo import DemoTools, ScriptedDemoModel, example_state
 from app.agent.nodes.investigate import run_investigate
 from app.agent.nodes.review import run_review
 from app.agent.runtime import AgentRuntime
-from app.agent.schemas import AgentContext, Investigation, NextStep, Review
+from app.agent.schemas import (
+    AgentContext,
+    Evidence,
+    InvestigationAssessment,
+    NextStep,
+    Review,
+    ReviewAssessment,
+)
 from app.agent.settings import Settings
 from app.agent.tools import EvidenceValidationError
 from app.agent.workflow import build_graph, completion_payload
@@ -22,11 +29,12 @@ async def test_full_pass_requires_fresh_document_validation():
     saved_initial = copy.deepcopy(initial)
     state = await build_graph(runtime).ainvoke(initial)
     assert initial == saved_initial
-    assert not any(name == "get_document" for name, _ in tools.calls)
     payload = await completion_payload(state, runtime)
     assert payload["outcome"] == "ASSIGN"
     assert payload["department"] == "HYD"
-    assert any(name == "get_document" for name, _ in tools.calls)
+    assert any(name == "get_evidence" for name, _ in tools.calls)
+    assert state["agent_context"]["final_validation"] == "PASS"
+    assert state["agent_context"]["traces"][-1]["tool"] == "get_evidence"
     assert "agent_context" not in payload
     assert all(trace["question"] for trace in state["agent_context"]["traces"])
 
@@ -68,9 +76,15 @@ async def test_reinvestigation_limit_is_two_returns_not_three_returns():
 @pytest.mark.asyncio
 async def test_removed_document_cannot_be_assigned_from_stale_evidence():
     tools = DemoTools()
+
+    def remove(name, args, result):
+        if name == "get_evidence":
+            result.update(status="NO_MATCH", result=None)
+        return result
+
+    tools.on_call = remove
     runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
     state = await build_graph(runtime).ainvoke(example_state())
-    tools.rows = []
     payload = await completion_payload(state, runtime)
     assert payload["outcome"] == "HUMAN_REVIEW"
     assert payload["review_reason"] == "VALIDATION_FAILED"
@@ -79,9 +93,15 @@ async def test_removed_document_cannot_be_assigned_from_stale_evidence():
 @pytest.mark.asyncio
 async def test_inactive_department_cannot_be_assigned_from_stale_directory():
     tools = DemoTools()
+
+    def deactivate(name, args, result):
+        if name == "search_departments" and sum(n == name for n, _ in tools.calls) == 3:
+            result["items"][0]["active"] = False
+        return result
+
+    tools.on_call = deactivate
     runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
     state = await build_graph(runtime).ainvoke(example_state())
-    tools.departments[0]["active"] = False
     assert (await completion_payload(state, runtime))["review_reason"] == "VALIDATION_FAILED"
 
 
@@ -90,8 +110,8 @@ async def test_fabricated_evidence_goes_to_validation_failed_not_pass():
     class FabricatingModel(ScriptedDemoModel):
         async def complete(self, schema, system, context):
             output = await super().complete(schema, system, context)
-            if schema is Investigation:
-                output.evidence[0].ref_id = "SDR-INVENTED"
+            if schema is InvestigationAssessment:
+                output.investigation.evidence[0].ref_id = "EV-SDR-INVENTED"
             return output
 
     runtime = AgentRuntime(model=FabricatingModel(), tools=DemoTools())
@@ -197,8 +217,185 @@ async def test_resume_after_failed_review_keeps_investigation_without_repeating_
 @pytest.mark.asyncio
 async def test_changed_source_version_is_not_silently_assigned():
     tools = DemoTools()
-    tools.rows[0]["metadata"]["source_version"] = "v1"
+
+    def change_version(name, args, result):
+        if name == "get_evidence":
+            result["result"]["source_version"] = "DEMO-v2"
+        return result
+
+    tools.on_call = change_version
     runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
     state = await build_graph(runtime).ainvoke(example_state())
-    tools.rows[0]["metadata"]["source_version"] = "v2"
     assert (await completion_payload(state, runtime))["review_reason"] == "VALIDATION_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_review_added_evidence_is_revalidated_and_included_in_final_payload():
+    class ReviewAddsEvidence(ScriptedDemoModel):
+        async def complete(self, schema, system, context):
+            data = json.loads(context)
+            if (
+                schema is NextStep
+                and data["stage"] == "REVIEWING"
+                and not any(r["source"] == "AMM" for r in data["evidence_records"])
+            ):
+                return NextStep(
+                    action="CALL",
+                    question="부서 검토에 필요한 인용 맥락은?",
+                    tool_name="search_amm_references",
+                    arguments_json='{"query":"vibration"}',
+                    hold_reason=None,
+                )
+            result = await super().complete(schema, system, context)
+            if schema is ReviewAssessment:
+                result.additional_evidence = [
+                    Evidence(
+                        source="AMM",
+                        ref_id="EV-AMM-DEMO-001",
+                        excerpt="SYNTHETIC AMM citation context only.",
+                        why="추가 검토 근거",
+                    )
+                ]
+            return result
+
+    tools = DemoTools()
+    runtime = AgentRuntime(model=ReviewAddsEvidence(), tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    payload = await completion_payload(state, runtime)
+    assert payload["outcome"] == "ASSIGN"
+    assert {e["ref_id"] for e in payload["evidence"]} == {"EV-SDR-DEMO-001", "EV-AMM-DEMO-001"}
+    assert {a["evidence_id"] for n, a in tools.calls if n == "get_evidence"} == {
+        "EV-SDR-DEMO-001",
+        "EV-AMM-DEMO-001",
+    }
+
+
+@pytest.mark.asyncio
+async def test_final_revalidation_traces_are_checkpointed():
+    runtime = AgentRuntime(model=ScriptedDemoModel(), tools=DemoTools())
+    graph = build_graph(runtime, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "DEMO-REQUEST-001"}}
+    await graph.ainvoke(example_state(), config)
+    context = graph.get_state(config).values["agent_context"]
+    assert context["final_validation"] == "PASS"
+    assert context["traces"][-1]["tool"] == "get_evidence"
+    assert context["prepared_payload"]["outcome"] == "ASSIGN"
+
+
+@pytest.mark.asyncio
+async def test_technical_decisive_basis_keeps_public_source_enum_and_hands_off():
+    class TechnicalBasis(ScriptedDemoModel):
+        async def complete(self, schema, system, context):
+            result = await super().complete(schema, system, context)
+            if schema is ReviewAssessment:
+                result.technical_basis_ids = ["EV-TECH-DEMO-001"]
+            return result
+
+    runtime = AgentRuntime(model=TechnicalBasis(), tools=DemoTools())
+    state = await build_graph(runtime).ainvoke(example_state())
+    assert state["agent_context"]["hold"]["reason"] == "UNSUPPORTED_EVIDENCE_SOURCE"
+    assert (await completion_payload(state, runtime))["outcome"] == "HUMAN_REVIEW"
+
+
+@pytest.mark.asyncio
+async def test_context_version_change_at_final_gate_cannot_assign_old_plan():
+    tools = DemoTools()
+
+    def change(name, args, result):
+        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) == 3:
+            tools.version = 2
+            result["context_version"] = 2
+            result["result"]["context_version"] = 2
+        return result
+
+    tools.on_call = change
+    runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    assert state["agent_context"]["context_refresh_count"] == 1
+    assert state["agent_context"]["context_version"] == 2
+    assert len(state["agent_context"]["superseded_assessments"]) == 1
+    assert len(state["investigations"]) == 1
+    assert sum(s == "InvestigationAssessment" for s, _ in runtime.model.calls) == 2
+    assert (await completion_payload(state, runtime))["outcome"] == "ASSIGN"
+
+
+@pytest.mark.asyncio
+async def test_human_or_terminal_request_is_never_automatically_reassigned():
+    tools = DemoTools()
+    tools.status = "HUMAN_REVIEW"
+    model = ScriptedDemoModel()
+    runtime = AgentRuntime(model=model, tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    assert model.calls == []
+    assert state["agent_context"]["hold"]["reason"] == "REQUEST_STOPPED"
+    assert (await completion_payload(state, runtime))["outcome"] == "HUMAN_REVIEW"
+
+
+@pytest.mark.asyncio
+async def test_final_context_read_failure_never_reuses_stale_context():
+    tools = DemoTools()
+
+    def fail(name, args, result):
+        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) >= 3:
+            return {"status": "ERROR", "error": {"code": "OFFLINE", "retryable": False}}
+        return result
+
+    tools.on_call = fail
+    runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    assert (await completion_payload(state, runtime))["review_reason"] == "VALIDATION_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_repeated_context_changes_stop_after_one_context_refresh():
+    tools = DemoTools()
+
+    def change(name, args, result):
+        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) % 3 == 0:
+            tools.version += 1
+            result["context_version"] = tools.version
+            result["result"]["context_version"] = tools.version
+        return result
+
+    tools.on_call = change
+    runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    assert state["agent_context"]["context_refresh_count"] == 1
+    assert (await completion_payload(state, runtime))["outcome"] == "HUMAN_REVIEW"
+
+
+@pytest.mark.asyncio
+async def test_history_decision_is_revalidated_through_b02_not_r05():
+    class HistoryModel(ScriptedDemoModel):
+        async def complete(self, schema, system, context):
+            data = json.loads(context)
+            if (
+                schema is NextStep
+                and data["stage"] == "INVESTIGATING"
+                and not data["evidence_records"]
+            ):
+                return NextStep(
+                    action="CALL",
+                    question="현재 기체의 이력을 더 확인할 수 있는가?",
+                    tool_name="get_aircraft_history",
+                    arguments_json="{}",
+                    hold_reason=None,
+                )
+            result = await super().complete(schema, system, context)
+            if schema is InvestigationAssessment:
+                result.investigation.evidence = [
+                    Evidence(
+                        source="HISTORY",
+                        ref_id="MH-000123",
+                        excerpt="inspection requested",
+                        why="보고된 조사 이력",
+                    )
+                ]
+            return result
+
+    tools = DemoTools()
+    runtime = AgentRuntime(model=HistoryModel(), tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    assert (await completion_payload(state, runtime))["evidence"][0]["ref_id"] == "MH-000123"
+    assert sum(n == "get_aircraft_history" for n, _ in tools.calls) == 2
+    assert not any(n == "get_evidence" for n, _ in tools.calls)

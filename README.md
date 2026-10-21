@@ -1,106 +1,111 @@
-# LLM2 조사·판정 / LLM3 검토·인계
+# MRO LLM2·3 — 조사·검토와 근거 검증
 
-## 구현 범위
+팀 인터페이스 PDF 본문 v0.3을 우선하고, 읽기 도구의 상세 입력·반환은 Google MCP v1.0 및 팀 RAG 구현을 따른다.
+외부 Investigation / Review / Evidence 모델은 유지한다. 실제 배정과 요청 상태 변경은 Spring 책임이다.
 
-- PDF의 `app/agent/nodes/investigate.py`, `review.py` 경로와 `async (state) -> dict` 계약.
-- 모델이 현재 질문에 따라 다음 조회 도구를 선택하는 제한된 조사 루프.
-- 도구 호출마다 확인할 질문·실제 인자·결과·시도 횟수·반환 ID 기록.
-- 읽기 전용 도구 허용 목록, 10초 타임아웃, 일시적 연결 실패 시 1회 재시도.
-- 원문 ID/발췌/부서 검증, 재조사 최대 2회, 내부 보류 → HUMAN.
-- 최종 COMPLETED payload 준비 전 문서·이력·부서 재조회.
-- 실제 localhost MCP Streamable HTTP 전송 시험과 합성 모델로 하는 그래프 시험.
+## 현재 범위
 
-노드 안에서는 DB에 직접 쓰거나 배정하지 않는다. `workflow.py`도 callback payload를 준비할 뿐
-Spring에 전송하지 않는다. 팀 AI 서버 실행기가 /runs·콜백·FAILED 처리·5분 제한·Postgres 체크포인트를 소유한다.
-LLM1 초기 분류와 직접 배정 경로는 구현하지 않았다.
+- LLM2: 현재 질문에 필요한 B01~B03, R01~R05를 선택하고 근거 있는 조사안을 작성.
+- LLM3: 조사안 검토, 추가 근거 확인, PASS / SUPPLEMENT / HUMAN.
+- 최종 검증 노드: 접수 상태·범위 버전·부서·LLM2와 LLM3의 최종 인용 근거를 재조회하고 체크포인트에 기록.
+- SUPPLEMENT 재조사 최대 2회. 컨텍스트 변경 시 폐기한 판단을 보존하고 별도 1회만 범위를 다시 읽어 조사.
+- 원문·출처·위치·데이터/색인 버전 변경, 반복 컨텍스트 변경은 자동 인계 중단.
+- R04는 내부 참고용. 핵심 판단이 기술자료에 의존하면 기존 외부 형식을 유지하며 사람 검토로 인계.
+- 평가 모델은 OpenAI gpt-4o-mini로 선택. 모델 교체는 가능하며 실제 LLM 품질 결과는 아직 없다.
 
-## 실행
+이 저장소는 LLM1·RabbitMQ 소비자·Spring·업무 DB·실제 MCP 서버를 구현하지 않는다.
+팀 MCP 원본 데이터와의 종단 간 연동은 별도 확인해야 한다.
 
-```sh
+## 설치와 오프라인 확인
+
+Python 3.12와 uv를 사용한다.
+
+~~~sh
 uv sync --locked
 uv run pytest -q
 uv run ruff check app tests
 uv run python -m app.agent.demo
-```
+uv run python -m app.agent.evaluation
+~~~
 
-Python 3.12를 사용한다. 데모의 기체·사례·조사 결과·부서 배정은 모두 합성이며,
-실제 FAA 사례를 검색하거나 실제 LLM 품질을 평가한 결과가 아니다.
+데모와 기본 평가는 합성 자료·응답 대역만 사용하며 API 키가 필요 없다.
+평가의 8개 기대 경로는 평가기에만 있고 모델 입력과 검색 자료에 넣지 않는다.
+기대 경로 일치는 실제 고장 진단·검색 품질·정비 성공률이 아니다.
 
-## 실제 모델 연결
+## 실제 모델 품질 평가 준비
 
-`.env.example`을 `.env`로 복사하고 팀에서 선택한 모델·제공사·키를 로컬에 설정한다.
-API 키는 코드·채팅·버전 관리에 넣지 않는다. 모델은 tool planning과 구조화 출력을 지원해야 한다.
-`LLM_MODEL`과 `LLM_API_KEY`가 비어 있으면 실제 실행은 명확한 설정 오류로 중단된다.
+.env.example은 LLM_MODEL=gpt-4o-mini, LLM_PROVIDER=openai다.
+로컬 .env에서 LLM_API_KEY를 설정하거나 기존 환경의 OPENAI_API_KEY를 사용할 수 있다.
+명시한 LLM_API_KEY가 우선하며, OpenAI 제공사에서만 OPENAI_API_KEY를 대체로 사용한다.
+기존 .env를 덮어쓰지 않는다. 키는 채팅이나 Git에 넣지 않는다.
+제공사 모델은 LangChain with_structured_output을 지원해야 한다.
+OpenAI 제공사를 선택할 때만 해당 SDK extra를 설치한다.
 
-코어는 `StructuredModel.complete(schema, system, context)`에 의존하므로 모델을 주입할 수 있다.
-기본 LangChain 어댑터는 `with_structured_output`을 사용한다. 제공사별 SDK와 초기화 인자는
-팀 모델 선택 후 확인한다. OpenAI 제공사를 선택하는 경우에만 다음 extra를 설치할 수 있다.
+이번 버전에서는 사용자 결정에 따라 실제 LLM 평가를 수행하지 않았다.
 
-```sh
+~~~sh
 uv sync --locked --extra openai
-```
+uv run python -m app.agent.evaluation --live-model --case supported_handoff
+~~~
 
-모델 제공사 선택은 아직 확정하지 않았다. 현재 실 LLM 호출을 성공했다고 주장하지 않는다.
+--live-model은 실제 모델 사용량을 발생시킨다. 도구와 자료는 여전히 합성이다.
+먼저 한 사례에서 도구 선택·조사·검토를 사람이 확인한 후 전체 8개로 확대한다.
+현재 어댑터가 토큰 사용량을 수집하지 않으므로 token_usage=null이며 비용 0을 뜻하지 않는다.
+평가 범위와 수동 검토 기준은 EVALUATION.md에 있다.
 
-## 실행기와 연결
+## 팀 실행기 연결
 
-```python
-from app.agent.runtime import get_runtime
+~~~python
+from app.agent.runtime import runtime_for_request
 from app.agent.workflow import build_graph, completion_payload
 
-runtime = get_runtime()
+# Backend가 이 실행/접수/사용자 범위에 발급한 토큰을 실행기가 전달한다.
+# 토큰 발급·전달 경로는 Backend 담당 모듈에서 연결해야 한다.
+runtime = runtime_for_request(rag_token=backend_delegation)
 graph = build_graph(runtime, checkpointer=team_checkpointer)
-# initial_state는 Spring 확인 및 LLM1의 추가 조사 분기 이후의 상태다.
-state = await graph.ainvoke(
-    initial_state,
-    {"configurable": {"thread_id": initial_state["request_id"]}},
-)
+config = {"configurable": {"thread_id": initial_state["request_id"]}}
+state = await graph.ainvoke(initial_state, config)
 payload = await completion_payload(state, runtime)
-# 실행기가 이 payload를 COMPLETED 콜백으로 Spring에 전송한다.
-```
+# 실행기가 mro.agent.events에 COMPLETED를 발행. 실제 배정은 Spring.
+~~~
 
-`completion_payload`를 건너뛰고 PASS만 보고 배정 콜백을 보내면 안 된다.
-예외는 노드에서 삼키지 않는다. 호출자가 그래프 실행과 최종 검증 양쪽의 예외를 잡아
-PDF의 FAILED 콜백으로 전송해야 한다. callback의 event_id, 재시도 1·5·30초, 중복 제거는 실행기/Spring 책임이다.
-이 저장소에는 Spring으로 요청을 전송하는 HTTP 클라이언트와 /runs API가 없다.
+build_graph는 LLM1 sufficient=False 이후 진입하는 부분 그래프다.
+최종 finalize 노드가 원문을 재조회하므로 완료된 state에는 최종 검증 호출 기록과 prepared_payload가 포함된다.
+completion_payload는 이 검증 결과를 추출한다. 오래된 완료 체크포인트의 payload를 새 실행에 재사용하지 않는다.
+이미 완료된 그래프를 재발행해야 한다면 Spring의 현재 상태·이벤트 중복 방지 정책을 적용하고,
+새 결정이 필요하면 finalize_state 결과를 체크포인트에 반영한 뒤 발행해야 한다.
+단독 노드 조합은 finalize_state의 반환값을 저장해야 최종 검증 기록이 남는다.
 
-별도 노드 호출이 필요하면 다음 두 함수가 PDF 경로에 있다.
+PDF 경로의 investigate(state), review(state)를 직접 사용하는 실행기는 요청 범위 런타임을 바인딩할 수 있다.
 
-```python
-from app.agent.nodes.investigate import investigate
-from app.agent.nodes.review import review
-```
+~~~python
+from app.agent.runtime import using_runtime
+with using_runtime(runtime):
+    output = await investigate(state)
+~~~
 
-테스트·통합 시 의존성을 명시적으로 주입하려면 `run_investigate(state, runtime)`과
-`run_review(state, runtime)`을 사용한다.
+공유 프로세스에 사용자 토큰을 전역 캐시하거나 GraphState에 넣지 않는다.
+토큰 없이 기본 get_runtime을 사용하면 인증이 필요한 팀 RAG에는 연결할 수 없다.
 
-## MCP 연결
+## 실행기와 Spring이 연결할 사항
 
-기본 URL은 business 8101/mcp, rag 8102/mcp이다. `get_tools("business", "rag")` 계약을 따른다.
-앱 시작 시 미리 로드하거나 첫 사용 시 로드하고 도구 정의를 캐시한다. 각 접수의 검색 결과는 공유 캐시에 두지 않는다.
+- RabbitMQ: Spring이 선언한 큐/익스체인지를 소비·발행. prefetch=1.
+- 각 LLM 단계에서 STAGE_STARTED / STAGE_RESULT 발행. 내부 보류 시 가짜 Investigation 이벤트를 만들지 않음.
+- 그래프 예외는 FAILED. COMPLETED/FAILED 발행 성공 뒤 ACK. 영구 실패는 reject(requeue=false).
+- event_id 재사용과 중복 처리, 늦은 이벤트 차단, 5분 기한, 실제 Postgres 체크포인트 연결.
+- 최종 검증과 실제 배정 사이의 동시 변경은 Spring이 다시 검사.
+- LLM1 sufficient=True 직접 경로 및 정비팀 수락/거절·사람 검토는 별도 모듈.
 
-- business: get_aircraft, get_maintenance_history, search_similar_history, list_departments
-- rag: search_sdr, search_amm, get_document
+## MCP 계약
 
-쓰기 도구가 서버에 존재해도 LLM2·3에는 노출하지 않는다.
-정확한 기체·모델 인자를 고정하고 반환 메타데이터에 명시된 모델·항공사 불일치를 제외한다.
-하지만 메타데이터 누락은 일치를 입증하지 않는다. 서버 측 tenant/항공사 권한 검사와
-정확한 범위 필터를 이 클라이언트가 대신하지 않는다. 실제 MCP의 인증·범위 정보는 담당자와 연결해야 한다.
+business: get_request_context / get_aircraft_history / search_departments
+rag: search_jasc_codes / search_sdr_cases / search_amm_references / search_technical_docs / get_evidence
 
-팀 PDF가 지정한 `langchain-mcp-adapters`를 유지했다. 현재 adapters는 0.2.2, MCP SDK는 1.30.0으로
-lock에 고정됐다. SDK 2.x와의 import 충돌을 확인하여 `mcp<2`를 명시했다.
-전송 smoke test에는 upstream의 streamable_http_client 명칭 변경 DeprecationWarning이 남는다.
-새 `langchain.mcp`로의 전환은 팀 인터페이스 변경 시 검토한다.
+서버가 제공한 실제 inputSchema로 입력을 검사한다. tool_inputs.json은 합성 데모용 입력 계약 보존본이다.
+필수 도구가 빠지면 MCPContractError로 중단한다. R04만 팀 서버 미구현 시 선택 기능으로 허용한다.
+쓰기 도구는 노출하지 않는다. 도구 호출 10초, 일시적 실패 재시도 1회, 노드별 호출 한도 8회가 기본값이다.
 
-## 확인하지 않은 범위
+현재 SDK 조합은 mcp 1.30.0 / langchain-mcp-adapters 0.2.2이며 lock에 고정됐다.
+어댑터의 streamable_http_client 명칭 변경 경고가 남는다.
 
-- 실제 팀 MCP 서버·원본 SDR·AMM 참조 색인과의 연동 및 검색 품질.
-- 실제 LLM의 근거 선택·판단·배정 정확도, 지연·토큰 비용.
-- Spring 콜백·권한·실제 배정·정비팀 수락/거절의 전체 통합.
-- 실제 Postgres에서의 프로세스 재시작 복구. 현재 체크포인트 시험은 InMemorySaver 기반이다.
-- 문서·데이터 스냅샷 동결은 서버가 버전을 제공해야 한다. 제공된 버전의 변경은 감지하지만 없는 버전을 만들어내지 않는다.
-
-공식 확인 자료:
-- https://docs.langchain.com/oss/python/langchain/models
-- https://docs.langchain.com/oss/python/langgraph/graph-api
-- https://github.com/langchain-ai/langchain-mcp-adapters
+상세 계약: INTERFACE.md / 검증 기록: VALIDATION.md.

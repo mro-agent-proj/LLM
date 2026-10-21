@@ -1,7 +1,7 @@
 from app.agent.nodes.common import hold_update, json_context, prepare, select_evidence
 from app.agent.prompts import LLM3_SYSTEM
 from app.agent.runtime import AgentRuntime, get_runtime
-from app.agent.schemas import GraphState, Investigation, Review
+from app.agent.schemas import GraphState, Investigation, Review, ReviewAssessment
 from app.agent.tools import (
     EvidenceValidationError,
     get_context,
@@ -26,18 +26,26 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
     if not state["investigations"]:
         raise ValueError("LLM3 requires an investigation or an explicit internal hold")
     context, gateway = await prepare(state, runtime)
+    if context.hold is not None:
+        return human_review(state, context, context.hold.summary)
     if not context.departments:
         update = hold_update(context, "DEPARTMENT_UNAVAILABLE", "담당 부서 목록 확인이 필요합니다.")
         return {**update, **human_review(state, context, context.hold.summary)}
     step = await select_evidence(state, context, gateway, runtime, LLM3_SYSTEM, "REVIEWING")
     if step.action == "HOLD":
-        hold_update(context, "INSUFFICIENT_INFORMATION", step.question, [step.question])
+        if context.hold is None:
+            reason = (
+                "TOOL_LIMIT"
+                if gateway.calls >= runtime.settings.max_tool_calls
+                else "INSUFFICIENT_INFORMATION"
+            )
+            hold_update(context, reason, step.question, [step.question])
         return human_review(state, context, step.question)
     latest = state["investigations"][-1]
     if not isinstance(latest, Investigation):
         latest = Investigation.model_validate(latest)
-    output = await runtime.model.complete(
-        Review,
+    assessment = await runtime.model.complete(
+        ReviewAssessment,
         LLM3_SYSTEM,
         json_context(
             {
@@ -55,14 +63,33 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
                 "previous_reviews": state["reviews"],
                 "evidence_records": context.records,
                 "departments": context.departments,
+                "request_context": context.request_context,
+                "tool_traces": context.traces,
             }
         ),
     )
+    output = assessment.review
+    if output.decision == "PASS" and assessment.technical_basis_ids:
+        hold_update(
+            context,
+            "UNSUPPORTED_EVIDENCE_SOURCE",
+            "기술자료가 검토 결론의 핵심 근거라 출처 계약 합의가 필요합니다.",
+            assessment.technical_basis_ids,
+        )
+        return human_review(state, context, context.hold.summary)
     try:
         if output.department is not None:
             validate_department(output.department, context)
         if output.decision == "PASS":
             validate_evidence(latest.evidence, context)
+            validate_evidence(assessment.additional_evidence, context)
+            context.final_evidence = list(
+                {
+                    (e.source, e.ref_id, e.excerpt): e
+                    for e in [*latest.evidence, *assessment.additional_evidence]
+                }.values()
+            )
+            context.final_validation = "PENDING"
     except EvidenceValidationError as exc:
         hold_update(context, "VALIDATION_FAILED", str(exc))
         return human_review(state, context, str(exc))

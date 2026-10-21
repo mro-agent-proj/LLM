@@ -1,0 +1,405 @@
+{
+  "basis": "PDF v0.3 + agent/docs/spec-v1/mcp-tool-contracts.json, input schemas only; local proposal is not a new team decision",
+  "schemas": {
+    "get_request_context": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "get_aircraft_history": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "접수 검색 범위 버전"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "이력 검색 표현"
+        },
+        "occurred_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "occurred_to": {
+          "type": "string",
+          "format": "date"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "이력 반환 상한",
+          "default": 20
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "서버가 발급한 범위·질의·스냅샷 결합 커서"
+        }
+      },
+      "required": [
+        "request_id",
+        "context_version"
+      ],
+      "additionalProperties": false
+    },
+    "search_jasc_codes": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "접수 검색 범위 버전"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "코드 명칭·정의 질의"
+        },
+        "codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{4}$",
+            "description": "코드표에 존재하는 코드만 허용. 존재 여부는 서버에서 검사."
+          },
+          "maxItems": 20,
+          "description": "정확 조회 코드",
+          "minItems": 1
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "반환 상한",
+          "default": 5
+        }
+      },
+      "required": [
+        "request_id",
+        "context_version"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "query"
+          ]
+        },
+        {
+          "required": [
+            "codes"
+          ]
+        }
+      ]
+    },
+    "search_sdr_cases": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "접수 검색 범위 버전"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "증상·부품·위치 질의"
+        },
+        "candidate_jasc": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{4}$",
+            "description": "코드표에 존재하는 코드만 허용. 존재 여부는 서버에서 검사."
+          },
+          "maxItems": 10,
+          "description": "에이전트 추정 후보. 검색 가중치이며 사용자 고정 필터가 아니다."
+        },
+        "search_mode": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "explore"
+          ],
+          "description": "두 모드 모두 접수의 항공사·정확한 모델·사용자 고정 필터를 유지",
+          "default": "explore"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "반환 상한",
+          "default": 5
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "서버가 발급한 범위·질의·스냅샷 결합 커서"
+        }
+      },
+      "required": [
+        "request_id",
+        "context_version",
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "search_amm_references": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "접수 검색 범위 버전"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "증상·조치 맥락 질의"
+        },
+        "amm_reference_exact": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "정규화 가능한 참조번호의 정확 조회"
+        },
+        "candidate_jasc": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{4}$",
+            "description": "코드표에 존재하는 코드만 허용. 존재 여부는 서버에서 검사."
+          },
+          "maxItems": 10,
+          "description": "에이전트 추정 후보. 검색 가중치이며 사용자 고정 필터가 아니다."
+        },
+        "reference_levels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "chapter_section",
+              "subsection",
+              "task_format"
+            ],
+            "description": "인용 형식"
+          },
+          "maxItems": 3,
+          "description": "인용 수준 필터"
+        },
+        "search_mode": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "explore"
+          ],
+          "description": "두 모드 모두 접수의 항공사·정확한 모델·사용자 고정 필터를 유지",
+          "default": "explore"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "반환 상한",
+          "default": 5
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "서버가 발급한 범위·질의·스냅샷 결합 커서"
+        }
+      },
+      "required": [
+        "request_id",
+        "context_version"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "query"
+          ]
+        },
+        {
+          "required": [
+            "amm_reference_exact"
+          ]
+        }
+      ]
+    },
+    "search_technical_docs": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "접수 검색 범위 버전"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "기술 설명 질의"
+        },
+        "system_keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "계통·부품 키워드"
+          },
+          "maxItems": 20,
+          "description": "직접 JASC 번호 변환 대신 사용"
+        },
+        "include_unknown_applicability": {
+          "type": "boolean",
+          "description": "미상 적용 범위를 별도 참고로 포함",
+          "default": false
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "반환 상한",
+          "default": 5
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "서버가 발급한 범위·질의·스냅샷 결합 커서"
+        }
+      },
+      "required": [
+        "request_id",
+        "context_version",
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "get_evidence": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "접수 검색 범위 버전"
+        },
+        "evidence_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        }
+      },
+      "required": [
+        "request_id",
+        "context_version",
+        "evidence_id"
+      ],
+      "additionalProperties": false
+    },
+    "search_departments": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "서버가 발급한 식별자"
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "접수 검색 범위 버전"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "업무·계통 질의"
+        },
+        "candidate_jasc": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{4}$",
+            "description": "코드표에 존재하는 코드만 허용. 존재 여부는 서버에서 검사."
+          },
+          "maxItems": 10,
+          "description": "에이전트 추정 후보. 검색 가중치이며 사용자 고정 필터가 아니다."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "반환 상한",
+          "default": 5
+        }
+      },
+      "required": [
+        "request_id",
+        "context_version"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

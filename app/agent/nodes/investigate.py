@@ -1,32 +1,35 @@
 from app.agent.nodes.common import hold_update, json_context, prepare, select_evidence
 from app.agent.prompts import LLM2_SYSTEM
 from app.agent.runtime import AgentRuntime, get_runtime
-from app.agent.schemas import GraphState, Investigation
+from app.agent.schemas import GraphState, InvestigationAssessment
 from app.agent.tools import EvidenceValidationError, validate_department, validate_evidence
 
 
 async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
     context, gateway = await prepare(state, runtime)
-    context.hold = None
+    if context.hold is not None:
+        return {"agent_context": context.model_dump(mode="json")}
     if not context.departments:
         return hold_update(
             context, "DEPARTMENT_UNAVAILABLE", "유효한 부서 목록을 확인하지 못했습니다."
         )
     step = await select_evidence(state, context, gateway, runtime, LLM2_SYSTEM, "INVESTIGATING")
     if step.action == "HOLD":
+        if context.hold is not None:
+            return {"agent_context": context.model_dump(mode="json")}
         reason = (
             "TOOL_LIMIT" if gateway.calls >= runtime.settings.max_tool_calls else step.hold_reason
         )
         return hold_update(context, reason, step.question, [step.question])
-    if not context.records:
+    if not any(r.source != "TECHNICAL_DOC" for r in context.records):
         return hold_update(
             context,
             "INSUFFICIENT_EVIDENCE",
             "정상 조사안을 뒷받침할 조회 근거가 없습니다.",
             ["현재 증상을 확인할 이력·사례 또는 현장 정보를 확보해야 합니다."],
         )
-    output = await runtime.model.complete(
-        Investigation,
+    assessment = await runtime.model.complete(
+        InvestigationAssessment,
         LLM2_SYSTEM,
         json_context(
             {
@@ -45,10 +48,20 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
                 "previous_reviews": state["reviews"],
                 "evidence_records": context.records,
                 "departments": context.departments,
+                "request_context": context.request_context,
+                "tool_traces": context.traces,
                 "instruction": "확인된 자료만 사용해 정상 조사안을 작성하세요.",
             }
         ),
     )
+    if assessment.technical_basis_ids:
+        return hold_update(
+            context,
+            "UNSUPPORTED_EVIDENCE_SOURCE",
+            "기술자료가 핵심 판단 근거입니다. 외부 출처 계약 합의 전 사람 검토가 필요합니다.",
+            assessment.technical_basis_ids,
+        )
+    output = assessment.investigation
     try:
         validate_evidence(output.evidence, context)
         validate_department(output.proposed_department, context)

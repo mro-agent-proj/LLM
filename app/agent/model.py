@@ -32,10 +32,13 @@ def from_env(timeout: float) -> LangChainModel:
     from langchain.chat_models import init_chat_model
 
     model_name = os.getenv("LLM_MODEL")
+    provider = os.getenv("LLM_PROVIDER")
     api_key = os.getenv("LLM_API_KEY")
+    if not api_key and provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
     if not model_name or not api_key:
         raise RuntimeError("Set LLM_MODEL and LLM_API_KEY before live execution")
     options: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
-    if provider := os.getenv("LLM_PROVIDER"):
+    if provider:
         options["model_provider"] = provider
     return LangChainModel(init_chat_model(model_name, **options), timeout=timeout)

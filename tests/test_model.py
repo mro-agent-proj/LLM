@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.agent.model import LangChainModel
+from app.agent.model import LangChainModel, from_env
 from app.agent.schemas import Review
 
 
@@ -42,3 +42,26 @@ async def test_model_timeout_propagates_to_runner():
 
     with pytest.raises(TimeoutError):
         await LangChainModel(Model(), timeout=0.005).complete(Review, "system", "request")
+
+
+def test_openai_environment_key_fallback_and_explicit_llm_key_priority(monkeypatch):
+    captured = []
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-openai-key")
+
+    def initialize(name, **options):
+        captured.append((name, options))
+        return object()
+
+    monkeypatch.setattr("langchain.chat_models.init_chat_model", initialize)
+    from_env(45)
+    assert captured[-1][1]["api_key"] == "synthetic-openai-key"
+    monkeypatch.setenv("LLM_API_KEY", "synthetic-explicit-key")
+    from_env(45)
+    assert captured[-1][1]["api_key"] == "synthetic-explicit-key"
+    monkeypatch.delenv("LLM_API_KEY")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+        from_env(45)

@@ -1,6 +1,8 @@
 """LLM2/3 subgraph only. Spring and the LLM1 runner remain external owners."""
 
+from copy import deepcopy
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from langgraph.graph import END, START, StateGraph
 
@@ -12,7 +14,6 @@ from app.agent.schemas import GraphState, Investigation, Review
 from app.agent.tools import (
     EvidenceValidationError,
     ToolGateway,
-    evidence_text,
     get_context,
     validate_department,
     validate_evidence,
@@ -39,7 +40,17 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
     async def review_node(state: GraphState) -> dict:
         return await run_review(state, runtime)
 
+    async def finalize_node(state: GraphState) -> dict:
+        return await finalize_state(state, runtime)
+
     def route(state: GraphState) -> str:
+        context = get_context(state)
+        if (
+            context.hold
+            and context.hold.reason == "CONTEXT_CHANGED"
+            and context.context_refresh_count < 1
+        ):
+            return "refresh"
         result = latest_review(state)
         if result.decision != "SUPPLEMENT":
             return "end"
@@ -51,23 +62,65 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
     def retry_limit(state: GraphState) -> dict:
         return hold_update(get_context(state), "RETRY_LIMIT", "재조사 한도에 도달했습니다.")
 
+    def refresh_context(state: GraphState) -> dict:
+        context = get_context(state)
+        context.superseded_assessments.append(
+            {
+                "context_version": context.context_version,
+                "classification": state["classification"],
+                "investigations": state["investigations"],
+                "reviews": state["reviews"],
+            }
+        )
+        context.context_refresh_count += 1
+        context.context_version = None
+        context.request_context = {}
+        context.applied_scope = {}
+        context.snapshots = {}
+        context.hold = None
+        context.prepared_payload = {}
+        context.final_validation = "PENDING"
+        return {
+            "classification": None,
+            "investigations": [],
+            "reviews": [],
+            "agent_context": context.model_dump(mode="json"),
+        }
+
+    def after_finalization(state: GraphState) -> str:
+        context = get_context(state)
+        return (
+            "refresh"
+            if context.hold
+            and context.hold.reason == "CONTEXT_CHANGED"
+            and context.context_refresh_count < 1
+            else "end"
+        )
+
     graph.add_node("investigate", investigate_node)
     graph.add_node("review", review_node)
     graph.add_node("increment_retry", increment)
     graph.add_node("retry_limit", retry_limit)
+    graph.add_node("finalize", finalize_node)
+    graph.add_node("refresh_context", refresh_context)
     graph.add_edge(START, "investigate")
     graph.add_edge("investigate", "review")
     graph.add_conditional_edges(
         "review",
         route,
         {
-            "end": END,
+            "end": "finalize",
             "retry": "increment_retry",
             "limit": "retry_limit",
+            "refresh": "refresh_context",
         },
     )
     graph.add_edge("increment_retry", "investigate")
-    graph.add_edge("retry_limit", END)
+    graph.add_edge("retry_limit", "finalize")
+    graph.add_edge("refresh_context", "investigate")
+    graph.add_conditional_edges(
+        "finalize", after_finalization, {"refresh": "refresh_context", "end": END}
+    )
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -75,75 +128,119 @@ def human_payload(reason: str, summary: str) -> dict:
     return {"outcome": "HUMAN_REVIEW", "review_reason": reason, "summary": summary}
 
 
-async def completion_payload(state: GraphState, runtime: AgentRuntime) -> dict:
-    """Prepare the PDF's COMPLETED payload; does not send it or assign a request.
-
-    The caller must use this after the subgraph and before sending COMPLETED. A PASS
-    alone is insufficient. Re-read every cited record and the current department list.
-    """
+async def finalize_state(state: GraphState, runtime: AgentRuntime) -> dict:
+    """Graph node: revalidate all decision evidence and checkpoint the audit/payload."""
     context = get_context(state)
-    if context.hold is not None:
-        reason = context.hold.reason
-        if reason not in {"RETRY_LIMIT", "VALIDATION_FAILED"}:
-            reason = "AGENT_NEEDS_HUMAN"
-        return human_payload(reason, context.hold.summary)
-    review = latest_review(state)
-    if review.decision == "HUMAN":
-        return human_payload("AGENT_NEEDS_HUMAN", review.comments)
-    if review.decision != "PASS":
-        raise ValueError("The graph has not reached a final review outcome")
-    investigation = latest_investigation(state)
-    tools = await runtime.tools("business", "rag")
-    unique = {(item.source, item.ref_id) for item in investigation.evidence}
-    if len(unique) > 20:
-        return human_payload("VALIDATION_FAILED", "최종 근거 재검증 상한 20건을 초과했습니다.")
-    validation_settings = replace(runtime.settings, max_tool_calls=len(unique) + 1)
-    gateway = ToolGateway(tools, state, context, validation_settings)
-    await gateway.call("list_departments", {}, "배정 직전에도 제안 부서가 유효한가?")
-    try:
-        validate_department(review.department, context)
-        validate_evidence(investigation.evidence, context)
-        # These are mandatory validation reads, not discretionary investigation calls.
-        checked: set[tuple[str, str]] = set()
-        for evidence in investigation.evidence:
-            key = (evidence.source, evidence.ref_id)
-            if key in checked:
-                continue
-            checked.add(key)
-            if evidence.source in {"SDR", "AMM"}:
+    payload = None
+    if context.hold is None and latest_review(state).decision == "PASS":
+        investigation = latest_investigation(state)
+        evidence = context.final_evidence or investigation.evidence
+        unique = {(e.source, e.ref_id) for e in evidence}
+        if len(unique) > 20:
+            hold_update(context, "VALIDATION_FAILED", "최종 근거 재검증 상한 20건을 초과했습니다.")
+        else:
+            gateway = ToolGateway(
+                await runtime.tools("business", "rag"),
+                state,
+                context,
+                replace(runtime.settings, max_tool_calls=len(unique) + 2),
+            )
+            request_result = await gateway.call(
+                "get_request_context",
+                {},
+                "최종 결정 직전에도 접수·검색 범위 버전과 상태가 유효한가?",
+            )
+            if request_result.get("status") != "OK" and context.hold is None:
+                hold_update(
+                    context, "VALIDATION_FAILED", "최종 접수 상태·검색 범위를 확인하지 못했습니다."
+                )
+            if context.hold is None:
                 result = await gateway.call(
-                    "get_document",
-                    {"id": evidence.ref_id},
-                    "인용한 문서 ID와 원문이 현재도 일치하는가?",
+                    "search_departments",
+                    {"query": state["symptom_text"][:2000], "limit": 20},
+                    "검토한 부서가 현재도 이 접수의 업무를 수락할 수 있는가?",
                 )
-            else:
-                trace = next(
-                    (
-                        trace
-                        for trace in reversed(context.traces)
-                        if trace.tool in {"get_maintenance_history", "search_similar_history"}
-                        and evidence.ref_id in trace.item_ids
-                    ),
-                    None,
-                )
-                if trace is None:
-                    raise EvidenceValidationError("No original history retrieval for cited id")
-                result = await gateway.call(
-                    trace.tool, trace.arguments, "인용한 정비 이력을 재확인할 수 있는가?"
-                )
-            matches = [
-                item for item in result.get("items", []) if item.get("id") == evidence.ref_id
-            ]
-            if result.get("isError") or not matches:
-                raise EvidenceValidationError("Cited evidence could not be re-read")
-            if evidence.excerpt not in (evidence_text(matches[0]) or ""):
-                raise EvidenceValidationError("Cited excerpt changed or disappeared")
-        validate_evidence(investigation.evidence, context)
-    except EvidenceValidationError as exc:
-        return human_payload("VALIDATION_FAILED", str(exc))
-    return {
-        "outcome": "ASSIGN",
-        "department": review.department,
-        "summary": f"{investigation.finding}\n{review.comments}",
-        "evidence": [item.model_dump(mode="json") for item in investigation.evidence],
-    }
+                if result.get("status") != "OK":
+                    hold_update(context, "VALIDATION_FAILED", "최종 부서 조회에 실패했습니다.")
+            try:
+                if context.hold is not None:
+                    raise EvidenceValidationError(context.hold.summary)
+                validate_department(latest_review(state).department, context)
+                validate_evidence(evidence, context)
+                checked = set()
+                for item in evidence:
+                    key = (item.source, item.ref_id)
+                    if key in checked:
+                        continue
+                    checked.add(key)
+                    if item.source != "HISTORY":
+                        result = await gateway.call(
+                            "get_evidence",
+                            {"evidence_id": item.ref_id},
+                            "최종 결정에 인용한 근거의 출처·버전·원문 범위가 유지되는가?",
+                        )
+                        returned = result.get("result") or {}
+                        matched = returned.get("evidence_id") == item.ref_id
+                    else:
+                        trace = next(
+                            (
+                                t
+                                for t in reversed(context.traces)
+                                if t.tool == "get_aircraft_history"
+                                and any(
+                                    row.get("history_id", row.get("id")) == item.ref_id
+                                    for row in t.response.get("items", [])
+                                )
+                            ),
+                            None,
+                        )
+                        if trace is None:
+                            raise EvidenceValidationError("No original B02 retrieval for HISTORY")
+                        result = await gateway.call(
+                            "get_aircraft_history",
+                            trace.arguments,
+                            "인용한 동일 기체 이력과 조치·결과를 다시 확인할 수 있는가?",
+                        )
+                        matched = any(
+                            row.get("history_id", row.get("id")) == item.ref_id
+                            for row in result.get("items", [])
+                        )
+                    if result.get("status") != "OK" or not matched or context.hold:
+                        raise EvidenceValidationError("Cited evidence could not be revalidated")
+                validate_evidence(evidence, context)
+                context.final_evidence = evidence
+                payload = {
+                    "outcome": "ASSIGN",
+                    "department": latest_review(state).department,
+                    "summary": f"{investigation.finding}\n{latest_review(state).comments}",
+                    "evidence": [e.model_dump(mode="json") for e in evidence],
+                }
+            except EvidenceValidationError as exc:
+                if context.hold is None:
+                    hold_update(context, "VALIDATION_FAILED", str(exc))
+    if payload is None:
+        if context.hold:
+            reason = context.hold.reason
+            if reason in {"CONTEXT_CHANGED", "SNAPSHOT_CHANGED"}:
+                reason = "VALIDATION_FAILED"
+            elif reason not in {"RETRY_LIMIT", "VALIDATION_FAILED"}:
+                reason = "AGENT_NEEDS_HUMAN"
+            payload = human_payload(reason, context.hold.summary)
+        else:
+            review = latest_review(state)
+            if review.decision != "HUMAN":
+                raise ValueError("No final review outcome")
+            payload = human_payload("AGENT_NEEDS_HUMAN", review.comments)
+    context.final_validation = "PASS" if payload["outcome"] == "ASSIGN" else "HUMAN"
+    context.prepared_payload = payload
+    context.validated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return {"agent_context": context.model_dump(mode="json")}
+
+
+async def completion_payload(state: GraphState, runtime: AgentRuntime) -> dict:
+    """Extract the graph's validated payload. Standalone nodes require finalize_state."""
+    context = get_context(state)
+    if not context.prepared_payload:
+        update = await finalize_state(state, runtime)
+        context = get_context({**state, **update})
+    return deepcopy(context.prepared_payload)

@@ -550,6 +550,8 @@ name = "mro-agent-ai"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "httpx" },
+    { name = "jsonschema" },
     { name = "langchain" },
     { name = "langchain-mcp-adapters" },
     { name = "langgraph" },
@@ -572,6 +574,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "jsonschema", specifier = ">=4.20,<5" },
     { name = "langchain", specifier = ">=1.0,<2" },
     { name = "langchain-mcp-adapters", specifier = ">=0.1,<0.3" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1,<2" },
