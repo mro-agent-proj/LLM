@@ -1,0 +1,31 @@
+[project]
+name = "mro-agent-ai"
+version = "0.1.0"
+description = "LLM2/3 investigation and review nodes for the team's MRO interface"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "langchain>=1.0,<2",
+  "langgraph>=1.0,<2",
+  "langchain-mcp-adapters>=0.1,<0.3",
+  "mcp>=1.20,<2",
+  "pydantic>=2.10,<3",
+  "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+openai = ["langchain-openai>=1,<2"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.9,<1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
