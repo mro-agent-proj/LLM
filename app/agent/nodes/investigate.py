@@ -1,4 +1,11 @@
-from app.agent.nodes.common import hold_update, json_context, prepare, select_evidence
+from app.agent.nodes.common import (
+    hold_update,
+    json_context,
+    model_records,
+    model_traces,
+    prepare,
+    select_evidence,
+)
 from app.agent.prompts import LLM2_SYSTEM
 from app.agent.runtime import AgentRuntime, get_runtime
 from app.agent.schemas import GraphState, InvestigationAssessment
@@ -46,10 +53,10 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
                 "classification": state["classification"],
                 "previous_investigations": state["investigations"],
                 "previous_reviews": state["reviews"],
-                "evidence_records": context.records,
+                "evidence_records": model_records(context, state),
                 "departments": context.departments,
                 "request_context": context.request_context,
-                "tool_traces": context.traces,
+                "tool_traces": model_traces(context),
                 "instruction": "확인된 자료만 사용해 정상 조사안을 작성하세요.",
             }
         ),

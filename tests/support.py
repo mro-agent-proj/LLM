@@ -7,6 +7,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from app.agent.classification import SymptomTriage
 from app.agent.schemas import (
     Evidence,
     Investigation,
@@ -115,7 +116,7 @@ class DemoTools:
                 "evidence_group_id": "DEMO-HISTORY-GROUP",
                 "aircraft_id": "DEMO-AIRCRAFT",
                 "tail_number": "DEMO-TAIL",
-                "symptom": "wheel vibration",
+                "symptom": "착륙 후 휠 진동",
                 "observations": ["after landing"],
                 "actions": ["inspection requested"],
                 "outcome": None,
@@ -287,13 +288,17 @@ def finish() -> NextStep:
 class ScriptedDemoModel:
     """Response double. Passing this demo is not an LLM quality measurement."""
 
-    def __init__(self, supplements: int = 0):
+    def __init__(self, supplements: int = 0, triage_ata: list[str] | None = None):
         self.supplements = supplements
+        # LLM1 step 1: ATA hypotheses from the symptom alone (the demo symptom is a wheel issue).
+        self.triage_ata = triage_ata or ["32"]
         self.calls: list[tuple[str, dict]] = []
 
     async def complete(self, schema, system: str, context: str) -> Any:
         payload = json.loads(context)
         self.calls.append((schema.__name__, payload))
+        if schema is SymptomTriage:
+            return SymptomTriage(candidate_ata=self.triage_ata, rationale="합성 증상의 대상 계통.")
         if schema is NextStep:
             searched = any(
                 item["tool"] == "search_sdr_cases" for item in payload.get("observations", [])

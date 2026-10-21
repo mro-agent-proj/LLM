@@ -17,6 +17,84 @@ def json_context(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=encode)
 
 
+# Model input is bounded: full records and traces stay in AgentContext for validation, but the
+# prompt gets compact views. LLM1 reads every history page (often 80+ rows with retrieval
+# envelopes); resending all of it with every tool response overflowed the 128k context.
+RECORD_KEYS = (
+    "source_type", "title", "case_id", "operator_code", "model_key", "reported_jasc", "ata_chapter",
+    "jasc_code", "department_id", "evidence_group_id", "difficulty_date", "occurred_at",
+    "applicability_status", "relationship_status", "reference_level",
+)
+RESPONSE_KEYS = (
+    "status", "counts", "warnings", "applied_scope", "snapshot_ids", "next_cursor", "error",
+    "context_version",
+)
+MAX_RECORD_TEXT = 1500
+MAX_UNCITED_HISTORY = 20
+
+
+def _plain(value: Any) -> Any:
+    return value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+
+
+def cited_history(state: GraphState) -> set[str]:
+    """History rows the case actually rests on: LLM1 links and evidence cited by investigations."""
+    ids = set((_plain(state.get("classification")) or {}).get("linked_history_ids") or [])
+    for investigation in state.get("investigations") or []:
+        for item in _plain(investigation).get("evidence") or []:
+            if item.get("source") == "HISTORY":
+                ids.add(item["ref_id"])
+    return ids
+
+
+def model_records(context: AgentContext, state: GraphState) -> list[dict]:
+    """Every SDR/AMM/document row; history = cited rows + the most recent others (bounded)."""
+    cited = cited_history(state)
+    uncited = sorted(
+        (r for r in context.records if r.source == "HISTORY" and r.ref_id not in cited),
+        key=lambda r: str(r.metadata.get("occurred_at") or r.metadata.get("reported_at") or ""),
+        reverse=True,
+    )
+    keep = cited | {r.ref_id for r in uncited[:MAX_UNCITED_HISTORY]}
+    return [
+        {
+            "source": r.source,
+            "ref_id": r.ref_id,
+            "content": r.content[:MAX_RECORD_TEXT],
+            **{k: r.metadata[k] for k in RECORD_KEYS if r.metadata.get(k) is not None},
+        }
+        for r in context.records
+        if r.source != "HISTORY" or r.ref_id in keep
+    ]
+
+
+def omitted_history(context: AgentContext, state: GraphState) -> int:
+    shown = {r["ref_id"] for r in model_records(context, state) if r["source"] == "HISTORY"}
+    return sum(r.source == "HISTORY" and r.ref_id not in shown for r in context.records)
+
+
+def summarize_response(response: dict) -> dict:
+    """Envelope without the item bodies; the items themselves are in model_records."""
+    if not isinstance(response, dict):
+        return {}
+    return {k: response[k] for k in RESPONSE_KEYS if k in response}
+
+
+def model_traces(context: AgentContext) -> list[dict]:
+    return [
+        {
+            "tool": t.tool,
+            "question": t.question,
+            "arguments": t.arguments,
+            "outcome": t.outcome,
+            "item_ids": t.item_ids,
+            "error_code": t.error_code,
+            "response": summarize_response(t.response),
+        }
+        for t in context.traces
+    ]
+
+
 def hold_update(
     context: AgentContext, reason: str, summary: str, questions: list[str] | None = None
 ) -> dict:
@@ -64,6 +142,7 @@ async def select_evidence(
     reviews = latest_review.model_dump() if isinstance(latest_review, BaseModel) else latest_review
     supplement = reviews.get("supplement_request") if reviews else None
     observations: list[dict] = []
+    seen_calls: set[str] = set()
     while gateway.calls < runtime.settings.max_tool_calls:
         payload = {
             "stage": stage,
@@ -82,11 +161,12 @@ async def select_evidence(
             "latest_supplement_request": supplement,
             "retry_count": state["retry_count"],
             "tools": gateway.catalogue(),
-            "evidence_records": context.records,
+            "evidence_records": model_records(context, state),
+            "omitted_history_count": omitted_history(context, state),
             "evidence_groups": evidence_groups(context),
             "request_context": context.request_context,
             "snapshots": context.snapshots,
-            "tool_traces": context.traces,
+            "tool_traces": model_traces(context),
             "departments": context.departments,
             "observations": observations,
             "remaining_tool_calls": runtime.settings.max_tool_calls - gateway.calls,
@@ -103,8 +183,29 @@ async def select_evidence(
             await gateway.call("INVALID_ARGUMENT_JSON", {}, step.question)
             observations.append({"tool": step.tool_name, "error": "INVALID_ARGUMENT_JSON"})
             continue
+        identity = json.dumps([step.tool_name, args], sort_keys=True, ensure_ascii=False)
+        if identity in seen_calls:
+            # Counted like any call so a planner that keeps repeating itself still terminates.
+            await gateway.call("DUPLICATE_CALL", {}, step.question)
+            observations.append(
+                {
+                    "tool": step.tool_name,
+                    "error": "DUPLICATE_CALL",
+                    "note": "같은 인자로 이미 조회했다. evidence_records와 item_ids를 사용한다.",
+                }
+            )
+            continue
+        seen_calls.add(identity)
         result = await gateway.call(step.tool_name, args, step.question)
-        observations.append({"tool": step.tool_name, "question": step.question, "result": result})
+        returned = context.traces[-1].item_ids if context.traces else []
+        observations.append(
+            {
+                "tool": step.tool_name,
+                "question": step.question,
+                "result": summarize_response(result),
+                "item_ids": returned,
+            }
+        )
         if context.hold is not None:
             return NextStep(
                 action="HOLD",

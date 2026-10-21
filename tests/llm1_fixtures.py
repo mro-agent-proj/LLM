@@ -1,6 +1,6 @@
 import json
 
-from app.agent.classification import ClassificationDecision
+from app.agent.classification import ClassificationDecision, LinkEvidence
 from app.agent.schemas import Classification, NextStep
 from tests.support import DemoTools, ScriptedDemoModel
 
@@ -33,12 +33,20 @@ class FullModel(ScriptedDemoModel):
             rationale="같은 기체의 휠 증상과 담당 부서를 연결했다.",
         )
         self.output = self.output.model_copy(update=changes)
+        self.triage_ata = [self.output.ata_chapter]
+        self.shared_target = "휠 진동"
 
     async def complete(self, schema, system, context):
         data = json.loads(context)
         if schema is ClassificationDecision:
             self.calls.append((schema.__name__, data))
-            return ClassificationDecision(classification=self.output, missing_information=None)
+            links = [
+                LinkEvidence(history_id=i, shared_target=self.shared_target)
+                for i in self.output.linked_history_ids
+            ]
+            return ClassificationDecision(
+                classification=self.output, missing_information=None, link_evidence=links
+            )
         if (
             schema is NextStep
             and data["stage"] == "INVESTIGATING"

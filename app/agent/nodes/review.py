@@ -1,4 +1,11 @@
-from app.agent.nodes.common import hold_update, json_context, prepare, select_evidence
+from app.agent.nodes.common import (
+    hold_update,
+    json_context,
+    model_records,
+    model_traces,
+    prepare,
+    select_evidence,
+)
 from app.agent.prompts import LLM3_SYSTEM
 from app.agent.runtime import AgentRuntime, get_runtime
 from app.agent.schemas import GraphState, Investigation, Review, ReviewAssessment
@@ -61,10 +68,10 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
                 },
                 "latest_investigation": latest,
                 "previous_reviews": state["reviews"],
-                "evidence_records": context.records,
+                "evidence_records": model_records(context, state),
                 "departments": context.departments,
                 "request_context": context.request_context,
-                "tool_traces": context.traces,
+                "tool_traces": model_traces(context),
             }
         ),
     )

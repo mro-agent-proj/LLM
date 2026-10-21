@@ -26,6 +26,15 @@ HOLD는 현재 도구로 필수 정보·현장 관찰·우선순위를 확인할
 - '그 업무를 맡을 수 있는 부서가 어디인가' → search_departments.
 모든 도구를 차례로 호출할 필요는 없다. 새 결과가 질문을 해소하지 못하면 검색어를
 바꾸거나 다른 자료로 전환한다. 이전 supplement_request를 우선 해결한다.
+- SDR·AMM·JASC 원문은 영어다. search_sdr_cases·search_jasc_codes의 query는 부품·현상·경고
+  메시지를 나타내는 영어 핵심어 2~4개로 쓴다(예: 브레이크 진동 → "brake vibration",
+  비상구 표시등 → "exit sign light"). 검색어의 모든 단어가 원문에 있어야 일치하므로
+  길게 쓰지 않는다.
+  NO_MATCH면 단어를 줄이거나 동의어로 바꾼다.
+- 같은 도구를 같은 인자로 다시 호출하지 않는다. get_aircraft_history는 한 번이면 충분하며,
+  조회한 결과는 evidence_records와 observations의 item_ids로 확인한다.
+  evidence_records의 이력은 인용 이력과 최근 이력 일부만 담고,
+  omitted_history_count에 생략한 이력 수를 적는다.
 
 판단 규칙:
 - request_id/context_version은 실행기가 주입한다. operator_code/model_key/tenant/

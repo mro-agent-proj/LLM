@@ -459,11 +459,19 @@ class ToolGateway:
                 raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "정확한 모델 범위가 일치하지 않습니다."
                 )
-            if not technical and (
-                not scope.get("operator_code")
-                or scope.get("operator_code") != self.context.applied_scope.get("operator_code")
-                or scope.get("operator_filter_applied") is not True
-            ):
+            pinned_operator = self.context.applied_scope.get("operator_code")
+            if pinned_operator is None:
+                # Demo policy (team C02): B01 pins the model only; search must not filter operators.
+                operator_ok = (
+                    scope.get("operator_code") is None
+                    and scope.get("operator_filter_applied") is False
+                )
+            else:
+                operator_ok = (
+                    scope.get("operator_code") == pinned_operator
+                    and scope.get("operator_filter_applied") is True
+                )
+            if not technical and not operator_ok:
                 raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "SDR 운항사 범위가 일치하지 않습니다."
                 )
@@ -530,6 +538,9 @@ class ToolGateway:
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "다른 기체의 내부 이력입니다."
                 )
         for key in ("operator_code", "model_key"):
+            # A model-only scope (operator_code null) admits every operator of that model.
+            if key == "operator_code" and self.context.applied_scope.get(key) is None:
+                continue
             if (
                 source in {"SDR", "AMM"}
                 and row.get(key) is not None

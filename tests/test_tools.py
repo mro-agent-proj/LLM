@@ -382,3 +382,38 @@ async def test_scope_changed_without_new_version_is_not_silently_replanned():
     result = await runner.call("get_request_context", {}, "현재 범위 확인")
     assert result["error"]["code"] == "SCOPE_CHANGED_WITHOUT_VERSION"
     assert context.hold.reason == "VALIDATION_FAILED"
+
+
+def model_only(source):
+    """Backend demo policy (team C02): the context pins the model only, operator_code is null."""
+    source.scope.update(operator_code=None, operator_filter_applied=False)
+    return source
+
+
+@pytest.mark.asyncio
+async def test_model_only_scope_accepts_every_operator_of_the_model():
+    source = model_only(DemoTools())
+    source.rows[0]["operator_code"] = "AALA"  # a real SDR operator, not our airline
+    runner, context = gateway(source)
+    result = await runner.call("search_sdr_cases", {"query": "vibration"}, "기종 범위")
+    assert result["status"] == "OK"
+    assert context.records and context.hold is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result_scope, row",
+    [
+        ({"operator_filter_applied": True}, {}),  # server says it filtered an operator
+        ({"operator_code": "AALA"}, {}),  # server applied an operator the context never pinned
+        ({}, {"model_key": "A330343"}),  # model is still pinned in a model-only scope
+    ],
+)
+async def test_model_only_scope_still_rejects_operator_filter_and_other_models(result_scope, row):
+    source = model_only(DemoTools())
+    runner, context = gateway(source)
+    source.scope.update(result_scope)
+    source.rows[0].update(row)
+    result = await runner.call("search_sdr_cases", {"query": "vibration"}, "기종 범위")
+    assert result["error"]["code"] == "SCOPE_VIOLATION"
+    assert not context.records

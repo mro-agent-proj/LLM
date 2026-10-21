@@ -2,7 +2,7 @@ import copy
 
 import pytest
 
-from app.agent.classification import ClassificationDecision
+from app.agent.classification import ClassificationDecision, SymptomTriage
 from app.agent.full_workflow import build_full_graph
 from app.agent.nodes.classify import run_classify
 from app.agent.runtime import AgentRuntime
@@ -47,7 +47,6 @@ async def test_full_graph_keeps_two_reinvestigations():
 @pytest.mark.parametrize(
     "changes",
     [
-        {"linked_history_ids": []},
         {"linked_history_ids": ["MH-999999"]},
         {"linked_history_ids": ["MH-000123", "MH-000123"]},
         {"proposed_department": "UNKNOWN"},
@@ -167,8 +166,10 @@ async def test_new_department_fcs_and_uuid_directory_mapping_work_without_hardco
 async def test_unknown_ata_has_an_explicit_hold_without_invented_classification():
     class Unknown:
         async def complete(self, schema, system, context):
+            if schema is SymptomTriage:
+                return SymptomTriage(candidate_ata=["32"], rationale="휠 증상")
             return ClassificationDecision(
-                classification=None, missing_information="증상 추가 설명 필요"
+                classification=None, missing_information="증상 추가 설명 필요", link_evidence=[]
             )
 
     result = await run_classify(example_state(), AgentRuntime(Unknown(), BusinessTools()))
@@ -187,3 +188,99 @@ async def test_input_unchanged_and_llm_failures_propagate():
     with pytest.raises(RuntimeError):
         await run_classify(state, AgentRuntime(Broken(), BusinessTools()))
     assert state == original
+
+
+@pytest.mark.asyncio
+async def test_history_of_other_systems_is_never_shown_or_linked():
+    """Symptom-only triage picks the system first; other systems' history cannot steer LLM1."""
+    tools, model = BusinessTools(), FullModel()
+    model.triage_ata = ["33"]  # e.g. an exit-sign light symptom; the only history is ATA 32
+    result = await run_classify(example_state(), AgentRuntime(model, tools))
+    output = result["classification"]
+    assert output.sufficient is False and output.linked_history_ids == []
+    assert output.ata_chapter == "33" and output.proposed_department is None
+    # No classification call at all, so there is nothing to misuse.
+    assert [name for name, _ in model.calls] == ["SymptomTriage"]
+
+
+@pytest.mark.asyncio
+async def test_classification_sees_only_candidate_ata_history():
+    tools, model = BusinessTools(), FullModel()
+    door = dict(
+        tools.history[0],
+        history_id="MH-000200",
+        source_id="MH-000200",
+        ata_chapter="52",
+        jasc_code="5210",
+        symptom="door bottle pressure low",
+        department_id="HYD",
+    )
+    tools.history.append(door)
+    result = await run_classify(example_state(), AgentRuntime(model, tools))
+    assert result["classification"].sufficient is True
+    shown = next(payload for name, payload in model.calls if name == "ClassificationDecision")
+    assert [r["ref_id"] for r in shown["history"]] == ["MH-000123"]
+    assert shown["symptom_ata_candidates"] == ["32"]
+
+
+@pytest.mark.parametrize(
+    "triage, changes, shared_target",
+    [
+        (["32"], {"linked_history_ids": []}, "휠 진동"),  # sufficient without any link
+        (["52"], {"ata_chapter": "32"}, "휠 진동"),  # ATA outside the symptom candidates
+        (["32", "52"], {"linked_history_ids": ["MH-000200"]}, "휠 진동"),  # 52 row under ATA 32
+        (["32"], {}, "착륙 후"),  # only a phase word in common
+        (["32"], {}, "브레이크"),  # target not present in both texts
+    ],
+)
+@pytest.mark.asyncio
+async def test_unverified_direct_assignment_goes_to_investigation(triage, changes, shared_target):
+    """An unverified direct link is not a tool failure: LLM1 hands the case to LLM2 instead."""
+    tools = BusinessTools()
+    door = dict(
+        tools.history[0],
+        history_id="MH-000200",
+        source_id="MH-000200",
+        ata_chapter="52",
+        jasc_code="5210",
+        symptom="door bottle pressure low",
+        department_id="HYD",
+    )
+    tools.history.append(door)
+    model = FullModel(**changes)
+    model.triage_ata, model.shared_target = triage, shared_target
+    result = await run_classify(example_state(), AgentRuntime(model, tools))
+    output = result["classification"]
+    assert result["agent_context"]["hold"] is None
+    assert output.sufficient is False and output.linked_history_ids == []
+    assert output.ata_chapter in triage
+
+
+@pytest.mark.asyncio
+async def test_verified_link_keeps_the_direct_path_and_its_evidence():
+    tools, model = BusinessTools(), FullModel()
+    state = await build_full_graph(AgentRuntime(model, tools)).ainvoke(example_state())
+    assert state["classification"].sufficient is True
+    assert state["agent_context"]["prepared_payload"]["outcome"] == "ASSIGN"
+    assert state["investigations"] == []
+
+
+def test_history_ata_reads_business_mcp_observations():
+    from app.agent.nodes.classify import history_ata
+    from app.agent.schemas import RetrievedRecord
+
+    def record(metadata):
+        return RetrievedRecord(source="HISTORY", ref_id="MH-000001", content="x", metadata=metadata)
+
+    assert history_ata(record({"observations": ["ata_chapter=27", "jasc_code=2750"]})) == "27"
+    assert history_ata(record({"ata_chapter": "32"})) == "32"
+    assert history_ata(record({"observations": ["after landing"]})) is None
+
+
+@pytest.mark.asyncio
+async def test_blank_link_reason_drops_the_link_instead_of_failing_the_run():
+    tools, model = BusinessTools(), FullModel()
+    model.shared_target = ""
+    result = await run_classify(example_state(), AgentRuntime(model, tools))
+    assert result["agent_context"]["hold"] is None
+    assert result["classification"].sufficient is False
