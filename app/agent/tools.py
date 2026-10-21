@@ -1,4 +1,4 @@
-"""Read-only v0.3 adapters. The server owns request scope; the model selects queries."""
+"""Execute maintenance enquiries while preserving source and aircraft applicability."""
 
 import asyncio
 import copy
@@ -42,7 +42,7 @@ class ToolResultError(ValueError):
     pass
 
 
-class ContractFailure(ToolResultError):
+class ScopeViolation(ToolResultError):
     def __init__(self, code: str, reason: str, message: str):
         super().__init__(message)
         self.code, self.reason = code, reason
@@ -313,7 +313,7 @@ class ToolGateway:
             previous = self.context.model_copy(deep=True)
             try:
                 self._accept(name, args, result)
-            except ContractFailure as exc:
+            except ScopeViolation as exc:
                 self.context.__dict__.update(previous.__dict__)
                 self._invalidate(exc.reason, str(exc))
                 result = _failure(exc.code, str(exc))
@@ -329,14 +329,14 @@ class ToolGateway:
         if status not in {"OK", "NO_DATA", "NO_MATCH", "NEEDS_INPUT"}:
             raise ToolResultError("Missing or invalid business status")
         if result.get("request_id") != self.state["request_id"]:
-            raise ContractFailure(
+            raise ScopeViolation(
                 "REQUEST_MISMATCH", "VALIDATION_FAILED", "다른 접수의 도구 응답입니다."
             )
         if (
             name != "get_request_context"
             and result.get("context_version") != self.context.context_version
         ):
-            raise ContractFailure(
+            raise ScopeViolation(
                 "CONTEXT_VERSION_CONFLICT", "CONTEXT_CHANGED", "검색 범위 버전이 변경됐습니다."
             )
         if status == "NEEDS_INPUT":
@@ -396,32 +396,32 @@ class ToolGateway:
         if not isinstance(scope, dict) or "model_key" not in scope or "operator_code" not in scope:
             raise ToolResultError("Missing resolved_scope")
         if self.context.context_version is not None and version != self.context.context_version:
-            raise ContractFailure(
+            raise ScopeViolation(
                 "CONTEXT_VERSION_CONFLICT",
                 "CONTEXT_CHANGED",
                 "접수 범위가 변경되어 기존 판단을 사용할 수 없습니다.",
             )
         if self.context.context_version is not None and scope != self.context.applied_scope:
-            raise ContractFailure(
+            raise ScopeViolation(
                 "SCOPE_CHANGED_WITHOUT_VERSION",
                 "VALIDATION_FAILED",
                 "같은 컨텍스트 버전에서 검색 범위가 변경됐습니다.",
             )
         aircraft = value.get("aircraft") or {}
         if aircraft.get("registration") != self.state["tail_number"]:
-            raise ContractFailure(
+            raise ScopeViolation(
                 "AIRCRAFT_MISMATCH", "VALIDATION_FAILED", "접수 기체가 실행 입력과 다릅니다."
             )
         if aircraft.get("model_raw") not in (None, self.state["aircraft_model"]):
-            raise ContractFailure(
+            raise ScopeViolation(
                 "MODEL_MISMATCH", "VALIDATION_FAILED", "접수 모델이 실행 입력과 다릅니다."
             )
         if scope.get("model_key") not in (None, self.state["aircraft_model"].replace("-", "")):
-            raise ContractFailure(
+            raise ScopeViolation(
                 "MODEL_MISMATCH", "VALIDATION_FAILED", "SDR 모델 키가 접수 모델과 다릅니다."
             )
         if (value.get("report") or {}).get("symptom") != self.state["symptom_text"]:
-            raise ContractFailure(
+            raise ScopeViolation(
                 "REPORT_CHANGED", "CONTEXT_CHANGED", "신고 내용이 실행 입력과 달라졌습니다."
             )
         self.context.context_version = version
@@ -446,7 +446,7 @@ class ToolGateway:
             and (result.get("result") or {}).get("source_type") == "airbus_technical_article"
         )
         if technical and scope.get("operator_filter_applied") is not False:
-            raise ContractFailure(
+            raise ScopeViolation(
                 "SCOPE_VIOLATION",
                 "VALIDATION_FAILED",
                 "공개 기술자료에 운항사 필터를 적용하면 안 됩니다.",
@@ -456,7 +456,7 @@ class ToolGateway:
                 scope.get("model_key") != self.context.applied_scope.get("model_key")
                 or scope.get("model_filter_applied") is not True
             ):
-                raise ContractFailure(
+                raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "정확한 모델 범위가 일치하지 않습니다."
                 )
             if not technical and (
@@ -464,19 +464,19 @@ class ToolGateway:
                 or scope.get("operator_code") != self.context.applied_scope.get("operator_code")
                 or scope.get("operator_filter_applied") is not True
             ):
-                raise ContractFailure(
+                raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "SDR 운항사 범위가 일치하지 않습니다."
                 )
             if not technical and scope.get("locked_filters") != self.context.applied_scope.get(
                 "locked_filters"
             ):
-                raise ContractFailure(
+                raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "사용자 고정 조건이 변경됐습니다."
                 )
         family = "technical" if technical else "rag"
         pinned = self.context.snapshots.get(family)
         if pinned is not None and set(pinned) != set(snapshots):
-            raise ContractFailure(
+            raise ScopeViolation(
                 "SNAPSHOT_CHANGED", "SNAPSHOT_CHANGED", "고정 데이터·색인 버전이 변경됐습니다."
             )
         self.context.snapshots[family] = list(snapshots)
@@ -512,7 +512,7 @@ class ToolGateway:
         if not isinstance(identifier, str) or not identifier:
             raise ToolResultError("Missing history id or issued evidence_id")
         if source == "HISTORY" and not re.fullmatch(r"MH-[0-9]{6}", identifier):
-            raise ToolResultError("PDF HISTORY.ref_id must be MH- plus six digits")
+            raise ToolResultError("Maintenance history ID must be MH- plus six digits")
         if source in {"SDR", "AMM"} and not identifier.startswith(f"EV-{source}-"):
             raise ToolResultError("Use the issued EV-SDR/EV-AMM evidence_id")
         if source != "HISTORY" and any(
@@ -526,7 +526,7 @@ class ToolGateway:
                 None,
                 self.state["tail_number"],
             ):
-                raise ContractFailure(
+                raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "다른 기체의 내부 이력입니다."
                 )
         for key in ("operator_code", "model_key"):
@@ -535,14 +535,14 @@ class ToolGateway:
                 and row.get(key) is not None
                 and row[key] != self.context.applied_scope.get(key)
             ):
-                raise ContractFailure(
+                raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "근거 원문의 검색 범위가 다릅니다."
                 )
         if source in {"SDR", "AMM"}:
             locked = self.context.applied_scope.get("locked_filters") or {}
             codes = locked.get("jasc_codes") or []
             if row.get("reported_jasc") is not None and codes and row["reported_jasc"] not in codes:
-                raise ContractFailure(
+                raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "고정 JASC 조건과 원문 코드가 다릅니다."
                 )
             if row.get("difficulty_date"):
@@ -551,7 +551,7 @@ class ToolGateway:
                 if (lower and day < date.fromisoformat(lower)) or (
                     upper and day > date.fromisoformat(upper)
                 ):
-                    raise ContractFailure(
+                    raise ScopeViolation(
                         "SCOPE_VIOLATION",
                         "VALIDATION_FAILED",
                         "고정 발견일 범위를 벗어난 근거입니다.",
@@ -577,23 +577,23 @@ class ToolGateway:
         if old is not None:
             for key in ("source_version", "source_id", "evidence_group_id"):
                 if old.metadata.get(key) is not None and row.get(key) != old.metadata[key]:
-                    raise ContractFailure(
+                    raise ScopeViolation(
                         "EVIDENCE_CHANGED", "VALIDATION_FAILED", f"근거의 {key}가 변경됐습니다."
                     )
             if source != old.source:
-                raise ContractFailure(
+                raise ScopeViolation(
                     "SOURCE_CHANGED", "VALIDATION_FAILED", "근거 출처가 변경됐습니다."
                 )
             before_locator = old.metadata.get("locator", old.metadata.get("source_locator"))
             after_locator = row.get("locator", row.get("source_locator"))
             if before_locator is not None and after_locator != before_locator:
-                raise ContractFailure(
+                raise ScopeViolation(
                     "LOCATOR_CHANGED", "VALIDATION_FAILED", "근거 원문 위치가 변경됐습니다."
                 )
             if content != old.content and not (
                 name == "get_evidence" and (old.content in content or content in old.content)
             ):
-                raise ContractFailure(
+                raise ScopeViolation(
                     "EVIDENCE_CHANGED", "VALIDATION_FAILED", "근거 원문이 변경됐습니다."
                 )
         metadata = {

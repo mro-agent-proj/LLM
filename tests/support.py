@@ -1,6 +1,5 @@
-"""Synthetic, offline contract demo. No real airline data, credentials or model calls."""
+"""Synthetic dependencies for automated tests; never imported by the service."""
 
-import asyncio
 import copy
 import json
 from pathlib import Path
@@ -8,7 +7,6 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from app.agent.runtime import AgentRuntime
 from app.agent.schemas import (
     Evidence,
     Investigation,
@@ -17,7 +15,6 @@ from app.agent.schemas import (
     Review,
     ReviewAssessment,
 )
-from app.agent.workflow import build_graph, completion_payload
 
 DEMO_CONTENT = "SYNTHETIC CASE: wheel vibration after landing; inspection was requested."
 INPUTS = json.loads(Path(__file__).with_name("tool_inputs.json").read_text())["schemas"]
@@ -351,15 +348,3 @@ class ScriptedDemoModel:
                 )
             return ReviewAssessment(review=review, additional_evidence=[], technical_basis_ids=[])
         raise AssertionError(schema)
-
-
-async def main() -> None:
-    for name, empty in [("정상 인계", False), ("근거 없음", True)]:
-        runtime = AgentRuntime(model=ScriptedDemoModel(), tools=DemoTools(empty=empty))
-        state = await build_graph(runtime).ainvoke(example_state())
-        output = await completion_payload(state, runtime)
-        print(json.dumps({"scenario": name, "mock": True, "payload": output}, ensure_ascii=False))
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

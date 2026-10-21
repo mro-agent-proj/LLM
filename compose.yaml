@@ -1,0 +1,18 @@
+services:
+  llm23:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STATE_DIR: /data
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://mro:mro@host.docker.internal:5672/}
+      BUSINESS_MCP_URL: ${BUSINESS_MCP_URL:-http://host.docker.internal:8101/mcp}
+      RAG_MCP_URL: ${RAG_MCP_URL:-http://host.docker.internal:8102/mcp}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - llm23-state:/data
+    stop_grace_period: 30s
+
+volumes:
+  llm23-state:

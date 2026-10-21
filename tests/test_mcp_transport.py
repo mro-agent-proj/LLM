@@ -1,4 +1,4 @@
-"""Real localhost MCP transport with synthetic v0.3 data and request-bound authorization."""
+"""Local MCP transport using synthetic maintenance data and delegated authorization."""
 
 import asyncio
 import json
@@ -10,18 +10,18 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 from starlette.responses import JSONResponse
 
-from app.agent.demo import DemoTools, ScriptedDemoModel, example_state
-from app.agent.mcp_client import MCPContractError, MCPToolProvider
+from app.agent.mcp_client import MCPConfigurationError, MCPToolProvider
 from app.agent.runtime import AgentRuntime
 from app.agent.settings import Settings
 from app.agent.tools import ToolGateway, get_context
 from app.agent.workflow import build_graph, completion_payload
+from tests.support import DemoTools, ScriptedDemoModel, example_state
 
 
 @pytest.mark.asyncio
-async def test_actual_mcp_transport_v03_auth_and_full_graph(monkeypatch):
+async def test_mcp_authorization_and_investigation_graph(monkeypatch):
     source = DemoTools()
-    mcp = FastMCP("synthetic-v03-contract", stateless_http=True, json_response=True)
+    mcp = FastMCP("maintenance-test-tools", stateless_http=True, json_response=True)
 
     @mcp.tool()
     async def get_request_context(request_id: str) -> dict:
@@ -156,5 +156,5 @@ async def test_missing_required_tool_is_configuration_error_not_no_evidence():
             return []
 
     provider.client = Incomplete()
-    with pytest.raises(MCPContractError, match="missing required tools"):
+    with pytest.raises(MCPConfigurationError, match="missing required tools"):
         await provider("rag")

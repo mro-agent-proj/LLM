@@ -1,4 +1,4 @@
-"""Bounded evaluation: actual LLM + synthetic tools, or scripted contract regression.
+"""Test scenarios: model doubles and synthetic maintenance records.
 
 Expected outcomes stay in this evaluator and never enter model/tool context. This is
 not a real-aircraft diagnosis benchmark or a measurement of the team's search corpus.
@@ -10,11 +10,11 @@ import json
 import time
 from dataclasses import dataclass
 
-from app.agent.demo import DemoTools, ScriptedDemoModel, example_state
 from app.agent.model import from_env
 from app.agent.runtime import AgentRuntime
 from app.agent.tools import evidence_groups, get_context, validate_evidence
 from app.agent.workflow import build_graph, completion_payload
+from tests.support import DemoTools, ScriptedDemoModel, example_state
 
 
 @dataclass

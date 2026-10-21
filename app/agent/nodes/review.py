@@ -73,7 +73,7 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
         hold_update(
             context,
             "UNSUPPORTED_EVIDENCE_SOURCE",
-            "기술자료가 검토 결론의 핵심 근거라 출처 계약 합의가 필요합니다.",
+            "공개 기술자료의 현재 기체 적용성에 대한 담당자의 확인이 필요합니다.",
             assessment.technical_basis_ids,
         )
         return human_review(state, context, context.hold.summary)

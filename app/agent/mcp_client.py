@@ -1,4 +1,4 @@
-"""PDF get_tools() contract; only readonly tools are exposed to these nodes."""
+"""Request-scoped connections to maintenance records and technical search tools."""
 
 import asyncio
 import os
@@ -27,7 +27,7 @@ RAG_TOOLS = frozenset(
 OPTIONAL_TOOLS = frozenset({"search_technical_docs"})
 
 
-class MCPContractError(RuntimeError):
+class MCPConfigurationError(RuntimeError):
     pass
 
 
@@ -73,7 +73,7 @@ class MCPToolProvider:
                     selected = [tool for tool in discovered if tool.name in allowed]
                     missing = allowed - OPTIONAL_TOOLS - {tool.name for tool in selected}
                     if missing:
-                        raise MCPContractError(
+                        raise MCPConfigurationError(
                             f"{server} MCP missing required tools: {sorted(missing)}"
                         )
                     self.cache[server] = selected

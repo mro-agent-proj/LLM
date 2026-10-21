@@ -58,7 +58,7 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
         return hold_update(
             context,
             "UNSUPPORTED_EVIDENCE_SOURCE",
-            "기술자료가 핵심 판단 근거입니다. 외부 출처 계약 합의 전 사람 검토가 필요합니다.",
+            "공개 기술자료의 현재 기체 적용성을 기술 담당자가 확인해야 합니다.",
             assessment.technical_basis_ids,
         )
     output = assessment.investigation
