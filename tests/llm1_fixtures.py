@@ -1,8 +1,8 @@
 import json
 
 from app.agent.classification import ClassificationDecision
-from app.agent.demo import DemoTools, ScriptedDemoModel
 from app.agent.schemas import Classification, NextStep
+from tests.support import DemoTools, ScriptedDemoModel
 
 
 class BusinessTools(DemoTools):

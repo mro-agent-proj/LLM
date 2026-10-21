@@ -4,7 +4,6 @@ import json
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.agent.demo import DemoTools, ScriptedDemoModel, example_state
 from app.agent.nodes.investigate import run_investigate
 from app.agent.nodes.review import run_review
 from app.agent.runtime import AgentRuntime
@@ -19,6 +18,7 @@ from app.agent.schemas import (
 from app.agent.settings import Settings
 from app.agent.tools import EvidenceValidationError
 from app.agent.workflow import build_graph, completion_payload
+from tests.support import DemoTools, ScriptedDemoModel, example_state
 
 
 @pytest.mark.asyncio

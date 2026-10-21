@@ -1,4 +1,4 @@
-"""LLM2/3 subgraph only. Spring and the LLM1 runner remain external owners."""
+"""Investigate a defect, review its handoff, and revisit unresolved evidence."""
 
 from copy import deepcopy
 from dataclasses import replace
@@ -18,6 +18,7 @@ from app.agent.tools import (
     validate_department,
     validate_evidence,
 )
+from app.messages import event, stage_event
 
 
 def latest_review(state: GraphState) -> Review:
@@ -31,14 +32,30 @@ def latest_investigation(state: GraphState) -> Investigation:
 
 
 def build_graph(runtime: AgentRuntime, checkpointer=None):
-    """Entry assumes backend validation and LLM1's investigation routing are complete."""
+    """Run a validated maintenance request through investigation and independent review."""
     graph = StateGraph(GraphState)
 
     async def investigate_node(state: GraphState) -> dict:
-        return await run_investigate(state, runtime)
+        update = await run_investigate(state, runtime)
+        if len(update.get("investigations", [])) > len(state["investigations"]):
+            output = update["investigations"][-1].model_dump(mode="json")
+            update.update(stage_event(state, "INVESTIGATING", output))
+        return update
 
     async def review_node(state: GraphState) -> dict:
-        return await run_review(state, runtime)
+        update = await run_review(state, runtime)
+        output = update["reviews"][-1].model_dump(mode="json")
+        update.update(stage_event(state, "REVIEWING", output))
+        return update
+
+    def complete_node(state: GraphState) -> dict:
+        payload = get_context(state).prepared_payload
+        return {
+            "stage_events": [
+                *state.get("stage_events", []),
+                event(state["request_id"], "COMPLETED", payload),
+            ]
+        }
 
     async def finalize_node(state: GraphState) -> dict:
         return await finalize_state(state, runtime)
@@ -98,13 +115,18 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
         )
 
     graph.add_node("investigate", investigate_node)
+    graph.add_node("investigation_started", lambda s: stage_event(s, "INVESTIGATING"))
+    graph.add_node("review_started", lambda s: stage_event(s, "REVIEWING"))
     graph.add_node("review", review_node)
     graph.add_node("increment_retry", increment)
     graph.add_node("retry_limit", retry_limit)
     graph.add_node("finalize", finalize_node)
     graph.add_node("refresh_context", refresh_context)
-    graph.add_edge(START, "investigate")
-    graph.add_edge("investigate", "review")
+    graph.add_node("completed", complete_node)
+    graph.add_edge(START, "investigation_started")
+    graph.add_edge("investigation_started", "investigate")
+    graph.add_edge("investigate", "review_started")
+    graph.add_edge("review_started", "review")
     graph.add_conditional_edges(
         "review",
         route,
@@ -115,12 +137,13 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
             "refresh": "refresh_context",
         },
     )
-    graph.add_edge("increment_retry", "investigate")
+    graph.add_edge("increment_retry", "investigation_started")
     graph.add_edge("retry_limit", "finalize")
-    graph.add_edge("refresh_context", "investigate")
+    graph.add_edge("refresh_context", "investigation_started")
     graph.add_conditional_edges(
-        "finalize", after_finalization, {"refresh": "refresh_context", "end": END}
+        "finalize", after_finalization, {"refresh": "refresh_context", "end": "completed"}
     )
+    graph.add_edge("completed", END)
     return graph.compile(checkpointer=checkpointer)
 
 

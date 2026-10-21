@@ -8,6 +8,7 @@ from app.agent.mcp_client import MCPToolProvider
 from app.agent.model import StructuredModel
 from app.agent.runtime import AgentRuntime
 from app.agent.settings import Settings
+from app.credentials import credentials_for
 from app.server.contracts import RunRequest
 
 
@@ -24,16 +25,10 @@ class HeaderRuntimeFactory:
         self.model, self.settings = model, settings
 
     async def __call__(self, request: RunRequest, headers: Mapping) -> AgentRuntime:
-        tokens = {}
-        for field, header in (
-            ("business_token", "x-mro-business-token"),
-            ("rag_token", "x-mro-rag-token"),
-        ):
-            value = headers.get(header)
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError("Missing request-scoped MCP delegation")
-            tokens[field] = value
-        delegation = Delegation(**tokens)
+        credentials = await credentials_for(request, dict(headers))
+        delegation = Delegation(
+            business_token=credentials.business_token, rag_token=credentials.rag_token
+        )
         return AgentRuntime(
             model=self.model,
             settings=self.settings,

@@ -1,5 +1,5 @@
 {
-  "basis": "PDF v0.3 + agent/docs/spec-v1/mcp-tool-contracts.json, input schemas only; local proposal is not a new team decision",
+  "basis": "Synthetic maintenance enquiry inputs used only by tests",
   "schemas": {
     "get_request_context": {
       "type": "object",

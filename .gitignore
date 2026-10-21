@@ -28,3 +28,5 @@ dist/
 
 # OS metadata.
 .DS_Store
+
+.state/

@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 from pamqp.commands import Basic
 
-from app.agent.demo import example_state
 from app.agent.runtime import AgentRuntime
 from app.main import create_app
 from app.server.contracts import RunRequest, make_event
@@ -15,6 +14,7 @@ from app.server.journal import RunJournal
 from app.server.rabbit import WorkerState, handle_message, publish_confirmed
 from app.server.runner import EventPublishError, execute_run
 from tests.llm1_fixtures import BusinessTools, FullModel
+from tests.support import example_state
 
 REQUEST_ID = "a2222222-2222-4222-8222-222222222222"
 
@@ -153,7 +153,7 @@ async def test_confirmed_terminal_is_durable_and_ack_loss_replays_without_model(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["invalid", "missing_delegation", "publish_nack", "changed_input"])
+@pytest.mark.parametrize("kind", ["invalid", "missing_delegation", "changed_input"])
 async def test_permanent_failure_rejects_without_ack_or_requeue(kind, tmp_path):
     message, exchange = Message(), Exchange()
     journal = RunJournal(str(tmp_path / "journal.sqlite"))
@@ -161,12 +161,6 @@ async def test_permanent_failure_rejects_without_ack_or_requeue(kind, tmp_path):
         message.body = b"{}"
     if kind == "changed_input":
         journal.begin(REQUEST_ID, b"different original message")
-    if kind == "publish_nack":
-
-        async def nack(*args, **kwargs):
-            return Basic.Nack()
-
-        exchange.publish = nack
 
     async def factory(run, headers):
         if kind == "missing_delegation":

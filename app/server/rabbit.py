@@ -57,7 +57,14 @@ async def publish_confirmed(exchange, event: AgentEvent) -> None:
 
 
 async def handle_message(
-    message, exchange, factory: RuntimeFactory, *, journal: RunJournal, timeout_seconds=295
+    message,
+    exchange,
+    factory: RuntimeFactory,
+    *,
+    journal: RunJournal,
+    timeout_seconds=295,
+    checkpointer=None,
+    execution_timeout=280,
 ):
     try:
         if message.content_type != "application/json" or len(message.body) > 65536:
@@ -93,11 +100,22 @@ async def handle_message(
                 durable = journal.save(event)
                 await publish_confirmed(exchange, durable)
 
-            execution_budget = min(280, deadline - asyncio.get_running_loop().time() - 10)
+            execution_budget = min(
+                execution_timeout, deadline - asyncio.get_running_loop().time() - 10
+            )
             if execution_budget <= 0:
                 raise ValueError("Run expired before graph execution")
-            await execute_run(request, runtime, publish, timeout_seconds=execution_budget)
+            await execute_run(
+                request,
+                runtime,
+                publish,
+                timeout_seconds=execution_budget,
+                checkpointer=checkpointer,
+            )
         await message.ack()
+    except EventPublishError:
+        # Leave delivery unacknowledged; reconnect and resume durable graph/events.
+        raise
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -106,9 +124,18 @@ async def handle_message(
 
 
 class RabbitWorker:
-    def __init__(self, url: str, runtime_factory: RuntimeFactory, journal: RunJournal):
+    def __init__(
+        self,
+        url: str,
+        runtime_factory: RuntimeFactory,
+        journal: RunJournal,
+        *,
+        checkpointer=None,
+        execution_timeout=280,
+    ):
         self.url, self.factory = url, runtime_factory
-        self.journal = journal
+        self.journal, self.checkpointer = journal, checkpointer
+        self.execution_timeout = execution_timeout
         self.state = WorkerState()
         self.task: asyncio.Task | None = None
 
@@ -139,7 +166,12 @@ class RabbitWorker:
                         self.state.busy = True
                         try:
                             await handle_message(
-                                message, exchange, self.factory, journal=self.journal
+                                message,
+                                exchange,
+                                self.factory,
+                                journal=self.journal,
+                                checkpointer=self.checkpointer,
+                                execution_timeout=self.execution_timeout,
                             )
                         finally:
                             self.state.busy = False

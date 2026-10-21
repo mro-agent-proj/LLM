@@ -47,14 +47,19 @@ def _default_runtime() -> AgentRuntime:
     return AgentRuntime(model=from_env(settings.model_timeout), tools=get_tools, settings=settings)
 
 
-def runtime_for_request(*, rag_token: str, business_token: str | None = None) -> AgentRuntime:
+def runtime_for_request(
+    *,
+    rag_token: str | None = None,
+    business_token: str | None = None,
+    model: StructuredModel | None = None,
+) -> AgentRuntime:
     """Runner supplies Backend-issued delegation; tokens never enter model/checkpoint data."""
     from dotenv import load_dotenv
 
     load_dotenv()
     settings = Settings.from_env()
     return AgentRuntime(
-        model=from_env(settings.model_timeout),
+        model=model or from_env(settings.model_timeout),
         tools=MCPToolProvider(rag_token=rag_token, business_token=business_token),
         settings=settings,
     )

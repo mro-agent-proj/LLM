@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from app.agent.demo import DemoTools, ScriptedDemoModel
 from app.agent.runtime import AgentRuntime, get_runtime, using_runtime
+from tests.support import DemoTools, ScriptedDemoModel
 
 
 @pytest.mark.asyncio

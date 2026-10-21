@@ -19,5 +19,11 @@
     "app/agent/tools.py": "3d3ce1db82aa7ec75e6d087fd89d46ce9275ebd6d445855819f841cf0fe46c2b",
     "app/agent/transport.py": "9bc4c5550a7fcb13a1045424a0531865fe4e1dcce264fc421cd602031425c988",
     "app/agent/workflow.py": "dc227d32d22758bff05af80c6fadc67372474bbf635d45c56d4de961a65f1ce1"
+  },
+  "purpose": "Historical initial import only; hashes do not assert current files are unchanged.",
+  "integrated_service": {
+    "branch": "from-scratch-llm23-service",
+    "commit": "ecd915af2b5360bd37c015a7ef10dd9317b3c200",
+    "integration": "LLM2/3 nodes and prompts adopted; service adapted to the single FastAPI LLM1/2/3 runner"
   }
 }

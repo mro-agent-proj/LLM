@@ -3,12 +3,12 @@ import copy
 import pytest
 
 from app.agent.classification import ClassificationDecision
-from app.agent.demo import example_state
 from app.agent.full_workflow import build_full_graph
 from app.agent.nodes.classify import run_classify
 from app.agent.runtime import AgentRuntime
 from app.agent.settings import Settings
 from tests.llm1_fixtures import BusinessTools, FullModel
+from tests.support import example_state
 
 
 @pytest.mark.asyncio

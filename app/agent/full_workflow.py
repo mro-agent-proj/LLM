@@ -1,4 +1,4 @@
-"""LLM1/2/3 orchestration. Existing team investigation/review nodes are unchanged."""
+"""LLM1/2/3 orchestration with checkpointed public stage events."""
 
 import json
 from collections.abc import Awaitable, Callable
@@ -15,6 +15,7 @@ from app.agent.runtime import AgentRuntime
 from app.agent.schemas import Classification, GraphState
 from app.agent.tools import EvidenceValidationError, get_context, validate_evidence
 from app.agent.workflow import finalize_state, human_payload, latest_review
+from app.messages import event, stage_event
 
 StageCallback = Callable[[str, str, int, dict | None], Awaitable[None]]
 
@@ -114,6 +115,8 @@ def build_full_graph(
                 output = output[-1] if output else None
             if on_stage and output is not None:
                 await on_stage("STAGE_RESULT", stage, attempt, output.model_dump(mode="json"))
+            if output is not None:
+                update.update(stage_event(state, stage, output.model_dump(mode="json")))
             return update
 
         return node
@@ -145,6 +148,20 @@ def build_full_graph(
     def limit(state):
         return hold_update(get_context(state), "RETRY_LIMIT", "재조사 한도에 도달했습니다.")
 
+    def completed(state):
+        context = get_context(state)
+        if not context.prepared_payload or context.final_validation == "PENDING":
+            raise ValueError("Final validation did not complete")
+        return {
+            "stage_events": [
+                *state.get("stage_events", []),
+                event(state["request_id"], "COMPLETED", context.prepared_payload),
+            ]
+        }
+
+    graph.add_node("classification_started", lambda s: stage_event(s, "CLASSIFYING"))
+    graph.add_node("investigation_started", lambda s: stage_event(s, "INVESTIGATING"))
+    graph.add_node("review_started", lambda s: stage_event(s, "REVIEWING"))
     graph.add_node("classify", observed(run_classify, "CLASSIFYING", "classification"))
     graph.add_node("investigate", observed(run_investigate, "INVESTIGATING", "investigations"))
     graph.add_node("review", observed(run_review, "REVIEWING", "reviews"))
@@ -153,16 +170,25 @@ def build_full_graph(
     graph.add_node("hold", finish_hold)
     graph.add_node("increment", lambda state: {"retry_count": state["retry_count"] + 1})
     graph.add_node("limit", limit)
-    graph.add_edge(START, "classify")
-    graph.add_conditional_edges("classify", after_classify)
-    graph.add_edge("investigate", "review")
+    graph.add_node("completed", completed)
+    graph.add_edge(START, "classification_started")
+    graph.add_edge("classification_started", "classify")
+    graph.add_conditional_edges(
+        "classify",
+        after_classify,
+        {"hold": "hold", "direct": "direct", "investigate": "investigation_started"},
+    )
+    graph.add_edge("investigation_started", "investigate")
+    graph.add_edge("investigate", "review_started")
+    graph.add_edge("review_started", "review")
     graph.add_conditional_edges(
         "review",
         after_review,
         {"hold": "hold", "retry": "increment", "limit": "limit", "finalize": "finalize"},
     )
-    graph.add_edge("increment", "investigate")
+    graph.add_edge("increment", "investigation_started")
     graph.add_edge("limit", "hold")
     for node in ("direct", "finalize", "hold"):
-        graph.add_edge(node, END)
+        graph.add_edge(node, "completed")
+    graph.add_edge("completed", END)
     return graph.compile(checkpointer=checkpointer)
