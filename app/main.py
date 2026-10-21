@@ -16,6 +16,9 @@ from app.server.delegation import HeaderRuntimeFactory
 from app.server.journal import RunJournal
 from app.server.rabbit import RabbitWorker
 
+# Structured-output OpenAI models verified with this graph. gpt-4o-mini was the original default.
+SUPPORTED_MODELS = {"gpt-4o-mini", "gpt-4.1-mini", "gpt-5.4-mini"}
+
 
 def create_app(*, worker_factory=None) -> FastAPI:
     @asynccontextmanager
@@ -39,7 +42,10 @@ def create_app(*, worker_factory=None) -> FastAPI:
                 app.state.reason = "DELEGATION_NOT_CONFIGURED"
             elif not os.getenv("RABBITMQ_URL"):
                 app.state.reason = "RABBIT_NOT_CONFIGURED"
-            elif os.getenv("LLM_PROVIDER") != "openai" or os.getenv("LLM_MODEL") != "gpt-4o-mini":
+            elif (
+                os.getenv("LLM_PROVIDER") != "openai"
+                or os.getenv("LLM_MODEL") not in SUPPORTED_MODELS
+            ):
                 app.state.reason = "MODEL_CONFIGURATION_INVALID"
             else:
                 settings = Settings.from_env()

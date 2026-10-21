@@ -97,7 +97,77 @@ async def test_identical_repeat_call_is_not_executed_again():
     step = await select_evidence(
         state, context, gateway, AgentRuntime(model, source, settings), "s", "INVESTIGATING"
     )
-    assert step.action == "HOLD"  # the budget still ends the loop
+    # The budget still ends the loop; the SDR evidence already found is written up, not discarded.
+    assert step.action == "FINISH"
     assert sum(name == "search_sdr_cases" for name, _ in source.calls) == 1
     assert model.seen[1][0]["item_ids"] == ["EV-SDR-DEMO-001"]
     assert model.seen[2][-1]["error"] == "DUPLICATE_CALL"
+
+
+def _investigation_state(linked):
+    from app.agent.schemas import Classification
+
+    return {
+        "classification": Classification(
+            ata_chapter="32",
+            linked_history_ids=linked,
+            sufficient=False,
+            proposed_department=None,
+            rationale="r",
+        ),
+        "investigations": [],
+    }
+
+
+def test_history_tool_is_hidden_only_when_llm1_found_nothing_to_link():
+    from app.agent.nodes.common import hidden_tools
+
+    read = AgentContext(request_id="r", records=[history(1)])
+    assert hidden_tools(read, _investigation_state([]), "INVESTIGATING") == {"get_aircraft_history"}
+    assert hidden_tools(read, _investigation_state(["MH-000001"]), "INVESTIGATING") == set()
+    assert hidden_tools(read, _investigation_state([]), "REVIEWING") == set()
+    unread = AgentContext(request_id="r")
+    assert hidden_tools(unread, _investigation_state([]), "INVESTIGATING") == set()
+
+
+async def test_hold_with_evidence_is_sent_back_once_then_accepted():
+    import json
+
+    from app.agent.nodes.common import select_evidence
+    from app.agent.runtime import AgentRuntime
+    from app.agent.schemas import NextStep
+    from app.agent.settings import Settings
+    from app.agent.tools import ToolGateway
+    from tests.support import DemoTools, example_state
+
+    class Holder:
+        def __init__(self):
+            self.seen = []
+
+        async def complete(self, schema, system, context):
+            self.seen.append(json.loads(context)["observations"])
+            return NextStep(
+                action="HOLD",
+                question="현장 확인이 필요하다.",
+                tool_name=None,
+                arguments_json=None,
+                hold_reason="INSUFFICIENT_INFORMATION",
+            )
+
+    source, model = DemoTools(), Holder()
+    state = {**example_state(), **_investigation_state([])}
+    sdr = RetrievedRecord(source="SDR", ref_id="EV-SDR-DEMO-001", content="wheel", metadata={})
+    context = AgentContext(
+        request_id=state["request_id"],
+        context_version=1,
+        records=[sdr],
+        departments=[{"code": "HYD"}],
+        applied_scope=dict(source.scope),
+    )
+    gateway = ToolGateway(source.tools, state, context, Settings())
+    step = await select_evidence(
+        state, context, gateway, AgentRuntime(model, source, Settings()), "s", "INVESTIGATING"
+    )
+    assert step.action == "HOLD"  # the second HOLD is respected
+    assert model.seen[1][-1]["error"] == "HOLD_REJECTED"
+    assert len(model.seen) == 2 and gateway.calls == 0

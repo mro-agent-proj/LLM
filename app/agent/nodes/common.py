@@ -68,6 +68,23 @@ def model_records(context: AgentContext, state: GraphState) -> list[dict]:
     ]
 
 
+def usable_evidence(context: AgentContext, state: GraphState) -> bool:
+    """Something an investigation can cite: a retrieved case/reference or a cited history row."""
+    cited = cited_history(state)
+    return any(
+        r.source in {"SDR", "AMM", "TECHNICAL_DOC"} or r.ref_id in cited for r in context.records
+    )
+
+
+def hidden_tools(context: AgentContext, state: GraphState, stage: str) -> set[str]:
+    """LLM1 already compared every history page; with no linked row there is nothing to re-read."""
+    linked = (_plain(state.get("classification")) or {}).get("linked_history_ids") or []
+    read_by_llm1 = any(r.source == "HISTORY" for r in context.records)
+    if stage == "INVESTIGATING" and not linked and read_by_llm1:
+        return {"get_aircraft_history"}
+    return set()
+
+
 def omitted_history(context: AgentContext, state: GraphState) -> int:
     shown = {r["ref_id"] for r in model_records(context, state) if r["source"] == "HISTORY"}
     return sum(r.source == "HISTORY" and r.ref_id not in shown for r in context.records)
@@ -126,6 +143,8 @@ async def prepare(state: GraphState, runtime: AgentRuntime) -> tuple[AgentContex
         {"query": state["symptom_text"][:2000], "limit": 20},
         "현재 접수 범위에서 증상 관련 업무를 맡을 수 있는 부서는 어디인가?",
     )
+    # B01·B03 are mandatory checks, not the agent's choice: only planner calls use the budget.
+    gateway.calls = 0
     return context, gateway
 
 
@@ -143,6 +162,8 @@ async def select_evidence(
     supplement = reviews.get("supplement_request") if reviews else None
     observations: list[dict] = []
     seen_calls: set[str] = set()
+    hidden = hidden_tools(context, state, stage)
+    hold_rejected = False
     while gateway.calls < runtime.settings.max_tool_calls:
         payload = {
             "stage": stage,
@@ -160,7 +181,7 @@ async def select_evidence(
             "investigations": state["investigations"],
             "latest_supplement_request": supplement,
             "retry_count": state["retry_count"],
-            "tools": gateway.catalogue(),
+            "tools": [t for t in gateway.catalogue() if t["name"] not in hidden],
             "evidence_records": model_records(context, state),
             "omitted_history_count": omitted_history(context, state),
             "evidence_groups": evidence_groups(context),
@@ -172,8 +193,37 @@ async def select_evidence(
             "remaining_tool_calls": runtime.settings.max_tool_calls - gateway.calls,
         }
         step = await runtime.model.complete(NextStep, system, json_context(payload))
+        if (
+            step.action == "HOLD"
+            and stage == "INVESTIGATING"
+            and not hold_rejected
+            and context.departments
+            and usable_evidence(context, state)
+        ):
+            # Evidence and departments exist: unconfirmed field facts belong in the handover's
+            # next checks, not in a hold. Asked once; a second HOLD is accepted.
+            hold_rejected = True
+            observations.append(
+                {
+                    "error": "HOLD_REJECTED",
+                    "note": "조회한 근거와 부서 후보가 있다. FINISH로 조사안을 쓰고, "
+                    "미확인 사항은 rationale의 '부서에 요청할 다음 확인'에 적는다. "
+                    "근거로 부서를 정할 수 없을 때만 다시 HOLD한다.",
+                }
+            )
+            continue
         if step.action != "CALL":
             return step
+        if step.tool_name in hidden:
+            await gateway.call("TOOL_NOT_OFFERED", {}, step.question)
+            observations.append(
+                {
+                    "tool": step.tool_name,
+                    "error": "TOOL_NOT_OFFERED",
+                    "note": "LLM1이 이 기체의 전체 이력을 이미 비교했고 연결할 이력이 없었다.",
+                }
+            )
+            continue
         try:
             args = json.loads(step.arguments_json)
             if not isinstance(args, dict):
@@ -214,6 +264,15 @@ async def select_evidence(
                 arguments_json=None,
                 hold_reason="INSUFFICIENT_INFORMATION",
             )
+    if usable_evidence(context, state) or (stage == "REVIEWING" and state["investigations"]):
+        # Budget spent but the case has citable evidence: write the result instead of discarding it.
+        return NextStep(
+            action="FINISH",
+            question="도구 예산을 모두 사용해 지금까지 조회한 근거로 작성한다.",
+            tool_name=None,
+            arguments_json=None,
+            hold_reason=None,
+        )
     return NextStep(
         action="HOLD",
         question="도구 호출 한도 안에 조사를 마치지 못했습니다.",

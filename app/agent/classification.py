@@ -28,8 +28,12 @@ class ClassificationDecision(ContractModel):
 
     @model_validator(mode="after")
     def one_result(self) -> Self:
-        if (self.classification is None) == (self.missing_information is None):
+        if self.classification is None and self.missing_information is None:
             raise ValueError("Return a classification OR explain why classification is impossible")
+        # Newer models also fill missing_information next to a classification; the classification
+        # wins (its rationale carries the caveats) instead of failing the whole run.
+        if self.classification is not None:
+            self.missing_information = None
         return self
 
 

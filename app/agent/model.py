@@ -2,8 +2,8 @@ import asyncio
 import os
 from typing import Any, Protocol, TypeVar
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -21,11 +21,28 @@ class LangChainModel:
 
     async def complete(self, schema: type[T], system: str, context: str) -> T:
         runnable = self.model.with_structured_output(schema)
-        output = await asyncio.wait_for(
-            runnable.ainvoke([SystemMessage(content=system), HumanMessage(content=context)]),
-            timeout=self.timeout,
-        )
-        return output if isinstance(output, schema) else schema.model_validate(output)
+        messages = [SystemMessage(content=system), HumanMessage(content=context)]
+        for attempt in range(2):
+            try:
+                output = await asyncio.wait_for(runnable.ainvoke(messages), timeout=self.timeout)
+                return output if isinstance(output, schema) else schema.model_validate(output)
+            except ValidationError as exc:
+                # One repair round: a malformed structured output should not end the whole run.
+                if attempt:
+                    raise
+                problems = "; ".join(
+                    f"{'.'.join(map(str, e['loc'])) or schema.__name__}: {e['msg']}"
+                    for e in exc.errors()
+                )
+                messages = [
+                    *messages,
+                    AIMessage(content="(이전 출력이 스키마 검증에 실패했습니다)"),
+                    HumanMessage(
+                        content=f"출력이 스키마 규칙을 어겼습니다: {problems}. "
+                        "규칙에 맞게 다시 출력하세요."
+                    ),
+                ]
+        raise AssertionError("unreachable")
 
 
 def from_env(timeout: float) -> LangChainModel:
