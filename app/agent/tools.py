@@ -630,6 +630,28 @@ class ToolGateway:
         ]
 
 
+def ground_evidence(evidence: list, context: AgentContext) -> list:
+    """Replace a paraphrased excerpt of a retrieved record with its original text.
+
+    The model picks which retrieved record supports the finding; the quote itself comes from the
+    record, so it is always original. Unknown ids are left untouched and still fail validation.
+    """
+    registry = {(r.source, r.ref_id): r for r in context.records}
+    grounded = []
+    for item in evidence:
+        record = registry.get((item.source, item.ref_id))
+        raw_spans = (record.metadata.get("quote_spans") or []) if record else []
+        spans = [s.get("text", "") for s in raw_spans]
+        verbatim = record is not None and item.excerpt in record.content and (
+            not spans or any(item.excerpt in span for span in spans)
+        )
+        if record is not None and not verbatim:
+            source_text = next((s for s in spans if s.strip()), record.content).strip()
+            item = item.model_copy(update={"excerpt": source_text[:300]})
+        grounded.append(item)
+    return grounded
+
+
 def validate_evidence(evidence: list, context: AgentContext) -> None:
     registry = {(r.source, r.ref_id): r for r in context.records}
     for item in evidence:

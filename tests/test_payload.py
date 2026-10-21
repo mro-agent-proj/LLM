@@ -171,3 +171,87 @@ async def test_hold_with_evidence_is_sent_back_once_then_accepted():
     assert step.action == "HOLD"  # the second HOLD is respected
     assert model.seen[1][-1]["error"] == "HOLD_REJECTED"
     assert len(model.seen) == 2 and gateway.calls == 0
+
+
+def test_history_llm1_rejected_is_not_shown_to_llm2():
+    context = AgentContext(request_id="r", records=[history(i) for i in range(1, 30)])
+    shown = model_records(context, _investigation_state([]))
+    assert [r for r in shown if r["source"] == "HISTORY"] == []
+    linked = model_records(context, _investigation_state(["MH-000001"]))
+    assert any(r["ref_id"] == "MH-000001" for r in linked)
+
+
+async def test_finish_without_evidence_is_sent_back_twice_then_returned():
+    import json
+
+    from app.agent.nodes.common import select_evidence
+    from app.agent.runtime import AgentRuntime
+    from app.agent.schemas import NextStep
+    from app.agent.settings import Settings
+    from app.agent.tools import ToolGateway
+    from tests.support import DemoTools, example_state
+
+    class Finisher:
+        def __init__(self):
+            self.seen = []
+
+        async def complete(self, schema, system, context):
+            self.seen.append(json.loads(context)["observations"])
+            return NextStep(
+                action="FINISH",
+                question="바로 작성",
+                tool_name=None,
+                arguments_json=None,
+                hold_reason=None,
+            )
+
+    source, model = DemoTools(), Finisher()
+    state = {**example_state(), **_investigation_state([])}
+    context = AgentContext(
+        request_id=state["request_id"],
+        context_version=1,
+        records=[history(1)],
+        departments=[{"code": "HYD"}],
+        applied_scope=dict(source.scope),
+    )
+    gateway = ToolGateway(source.tools, state, context, Settings())
+    step = await select_evidence(
+        state, context, gateway, AgentRuntime(model, source, Settings()), "s", "INVESTIGATING"
+    )
+    assert step.action == "FINISH" and len(model.seen) == 3
+    assert model.seen[1][-1]["error"] == model.seen[2][-1]["error"] == "FINISH_WITHOUT_EVIDENCE"
+
+
+def test_paraphrased_excerpt_is_replaced_with_original_text_unknown_id_is_not():
+    from app.agent.schemas import Evidence
+    from app.agent.tools import ground_evidence, validate_evidence
+
+    sdr = RetrievedRecord(
+        source="SDR",
+        ref_id="EV-SDR-1",
+        content="BRAKE VIBRATION ON TAXI. REPLACED BRAKE.",
+        metadata={},
+    )
+    context = AgentContext(request_id="r", records=[sdr])
+    good = Evidence(
+        source="SDR", ref_id="EV-SDR-1", excerpt="지상 이동 중 브레이크 진동", why="유사 사례"
+    )
+    unknown = Evidence(source="SDR", ref_id="EV-SDR-9", excerpt="x", why="y")
+    [fixed] = ground_evidence([good], context)
+    assert fixed.excerpt == "BRAKE VIBRATION ON TAXI. REPLACED BRAKE."
+    validate_evidence([fixed], context)
+    import pytest
+
+    with pytest.raises(Exception):
+        validate_evidence(ground_evidence([unknown], context), context)
+
+
+def test_citable_rejects_llm1_rejected_history_only():
+    from app.agent.nodes.common import citable
+
+    row = history(1)
+    rejected = _investigation_state([])
+    linked = _investigation_state(["MH-000001"])
+    assert citable(row, rejected, set()) is False
+    assert citable(row, linked, {"MH-000001"}) is True
+    assert citable(row, {"classification": None, "investigations": []}, set()) is True

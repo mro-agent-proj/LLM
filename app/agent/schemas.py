@@ -170,6 +170,17 @@ class NextStep(MaintenanceModel):
     arguments_json: str | None = Field(description="도구 인자 JSON 객체 문자열. 미사용 시 null")
     hold_reason: Literal["INSUFFICIENT_EVIDENCE", "INSUFFICIENT_INFORMATION"] | None
 
+    @model_validator(mode="before")
+    @classmethod
+    def blank_optional_is_null(cls, data: Any) -> Any:
+        # Models often send "" for an unused optional field; that means null, not a failed run.
+        if isinstance(data, dict):
+            return {
+                k: None if k in {"tool_name", "arguments_json", "hold_reason"} and v == "" else v
+                for k, v in data.items()
+            }
+        return data
+
     @model_validator(mode="after")
     def conditional_fields(self) -> Self:
         if self.action == "CALL" and (self.tool_name is None or self.arguments_json is None):

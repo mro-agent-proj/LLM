@@ -48,9 +48,13 @@ def cited_history(state: GraphState) -> set[str]:
 
 
 def model_records(context: AgentContext, state: GraphState) -> list[dict]:
-    """Every SDR/AMM/document row; history = cited rows + the most recent others (bounded)."""
+    """Every SDR/AMM/document row; history = cited rows + the most recent others (bounded).
+
+    When LLM1 compared the history and linked nothing, those rows were judged unrelated: showing
+    them again let LLM2 cite them instead of searching SDR/AMM, so only cited rows remain.
+    """
     cited = cited_history(state)
-    uncited = sorted(
+    uncited = [] if llm1_rejected_history(state) else sorted(
         (r for r in context.records if r.source == "HISTORY" and r.ref_id not in cited),
         key=lambda r: str(r.metadata.get("occurred_at") or r.metadata.get("reported_at") or ""),
         reverse=True,
@@ -68,12 +72,22 @@ def model_records(context: AgentContext, state: GraphState) -> list[dict]:
     ]
 
 
+def llm1_rejected_history(state: GraphState) -> bool:
+    classification = _plain(state.get("classification")) or {}
+    return bool(classification) and not classification.get("linked_history_ids")
+
+
+def citable(record, state: GraphState, cited: set[str]) -> bool:
+    """History LLM1 compared and linked nothing from is not evidence for LLM2."""
+    if record.source != "HISTORY":
+        return True
+    return record.ref_id in cited or not llm1_rejected_history(state)
+
+
 def usable_evidence(context: AgentContext, state: GraphState) -> bool:
-    """Something an investigation can cite: a retrieved case/reference or a cited history row."""
+    """Something an investigation can cite: a retrieved case or an admissible history row."""
     cited = cited_history(state)
-    return any(
-        r.source in {"SDR", "AMM", "TECHNICAL_DOC"} or r.ref_id in cited for r in context.records
-    )
+    return any(citable(r, state, cited) for r in context.records)
 
 
 def hidden_tools(context: AgentContext, state: GraphState, stage: str) -> set[str]:
@@ -164,6 +178,7 @@ async def select_evidence(
     seen_calls: set[str] = set()
     hidden = hidden_tools(context, state, stage)
     hold_rejected = False
+    finish_rejections = 0
     while gateway.calls < runtime.settings.max_tool_calls:
         payload = {
             "stage": stage,
@@ -212,6 +227,22 @@ async def select_evidence(
                 }
             )
             continue
+        if (
+            step.action == "FINISH"
+            and stage == "INVESTIGATING"
+            and finish_rejections < 2
+            and not usable_evidence(context, state)
+        ):
+            # An investigation without one retrieved case would cite invented evidence.
+            finish_rejections += 1
+            observations.append(
+                {
+                    "error": "FINISH_WITHOUT_EVIDENCE",
+                    "note": "아직 조회한 근거가 없다. search_sdr_cases(영어 핵심어)나 "
+                    "search_amm_references로 먼저 사례를 조회한다.",
+                }
+            )
+            continue
         if step.action != "CALL":
             return step
         if step.tool_name in hidden:
@@ -233,6 +264,22 @@ async def select_evidence(
             await gateway.call("INVALID_ARGUMENT_JSON", {}, step.question)
             observations.append({"tool": step.tool_name, "error": "INVALID_ARGUMENT_JSON"})
             continue
+        if "candidate_jasc" in args:
+            # Only codes confirmed through search_jasc_codes; a guessed code fails the whole search.
+            verified = {row.get("code") for row in context.jasc_candidates}
+            kept = [c for c in args["candidate_jasc"] if c in verified]
+            if kept != args["candidate_jasc"]:
+                observations.append(
+                    {
+                        "tool": step.tool_name,
+                        "note": "확인되지 않은 candidate_jasc를 제외했다. "
+                        "search_jasc_codes로 확인한 코드만 쓴다.",
+                        "dropped": [c for c in args["candidate_jasc"] if c not in verified],
+                    }
+                )
+            args = {**args, "candidate_jasc": kept} if kept else {
+                k: v for k, v in args.items() if k != "candidate_jasc"
+            }
         identity = json.dumps([step.tool_name, args], sort_keys=True, ensure_ascii=False)
         if identity in seen_calls:
             # Counted like any call so a planner that keeps repeating itself still terminates.

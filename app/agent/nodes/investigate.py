@@ -1,4 +1,6 @@
 from app.agent.nodes.common import (
+    citable,
+    cited_history,
     hold_update,
     json_context,
     model_records,
@@ -9,7 +11,12 @@ from app.agent.nodes.common import (
 from app.agent.prompts import LLM2_SYSTEM
 from app.agent.runtime import AgentRuntime, get_runtime
 from app.agent.schemas import GraphState, InvestigationAssessment
-from app.agent.tools import EvidenceValidationError, validate_department, validate_evidence
+from app.agent.tools import (
+    EvidenceValidationError,
+    ground_evidence,
+    validate_department,
+    validate_evidence,
+)
 
 
 async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
@@ -28,7 +35,8 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
             "TOOL_LIMIT" if gateway.calls >= runtime.settings.max_tool_calls else step.hold_reason
         )
         return hold_update(context, reason, step.question, [step.question])
-    if not any(r.source != "TECHNICAL_DOC" for r in context.records):
+    cited = cited_history(state)
+    if not any(r.source != "TECHNICAL_DOC" and citable(r, state, cited) for r in context.records):
         return hold_update(
             context,
             "INSUFFICIENT_EVIDENCE",
@@ -69,6 +77,23 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
             assessment.technical_basis_ids,
         )
     output = assessment.investigation
+    # History LLM1 compared and rejected is not evidence, even if its id appears in a rationale.
+    admissible = [
+        e
+        for e in output.evidence
+        if e.source != "HISTORY"
+        or citable(
+            next((r for r in context.records if r.ref_id == e.ref_id), None) or e, state, cited
+        )
+    ]
+    if not admissible:
+        return hold_update(
+            context,
+            "INSUFFICIENT_EVIDENCE",
+            "조사안에 조회한 근거가 없습니다.",
+            ["현재 증상과 같은 대상의 SDR·AMM 사례를 확보해야 합니다."],
+        )
+    output = output.model_copy(update={"evidence": ground_evidence(admissible, context)})
     try:
         validate_evidence(output.evidence, context)
         validate_department(output.proposed_department, context)

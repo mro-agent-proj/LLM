@@ -12,6 +12,7 @@ from app.agent.schemas import GraphState, Investigation, Review, ReviewAssessmen
 from app.agent.tools import (
     EvidenceValidationError,
     get_context,
+    ground_evidence,
     validate_department,
     validate_evidence,
 )
@@ -84,16 +85,17 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
             assessment.technical_basis_ids,
         )
         return human_review(state, context, context.hold.summary)
+    additional = ground_evidence(assessment.additional_evidence, context)
     try:
         if output.department is not None:
             validate_department(output.department, context)
         if output.decision == "PASS":
             validate_evidence(latest.evidence, context)
-            validate_evidence(assessment.additional_evidence, context)
+            validate_evidence(additional, context)
             context.final_evidence = list(
                 {
                     (e.source, e.ref_id, e.excerpt): e
-                    for e in [*latest.evidence, *assessment.additional_evidence]
+                    for e in [*latest.evidence, *additional]
                 }.values()
             )
             context.final_validation = "PENDING"

@@ -113,3 +113,18 @@ async def test_malformed_structured_output_is_repaired_once_then_fails():
     assert "스키마 규칙" in fake.seen[1][-1].content
     with pytest.raises(Exception):
         await LangChainModel(Fake([{"code": "x"}, {"code": "y"}])).complete(Out, "s", "c")
+
+
+def test_next_step_treats_blank_optional_fields_as_null():
+    from app.agent.schemas import NextStep
+
+    step = NextStep.model_validate(
+        {
+            "action": "FINISH",
+            "question": "작성",
+            "tool_name": "",
+            "arguments_json": "",
+            "hold_reason": "",
+        }
+    )
+    assert step.tool_name is None and step.arguments_json is None and step.hold_reason is None
