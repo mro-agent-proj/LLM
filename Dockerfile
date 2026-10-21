@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:0.12.17-python3.12-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 WORKDIR /service
 ENV UV_COMPILE_BYTECODE=1 PYTHONUNBUFFERED=1 STATE_DIR=/data
 COPY pyproject.toml uv.lock ./
