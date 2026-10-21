@@ -1,7 +1,7 @@
 import pytest
 
-from app.agent.demo import ScriptedDemoModel
-from app.agent.evaluation import cases, evaluate
+from tests.scenarios import cases, evaluate
+from tests.support import ScriptedDemoModel
 
 
 @pytest.mark.asyncio

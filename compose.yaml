@@ -1,0 +1,27 @@
+# Starts only the unified AI server. Backend owns DB, RabbitMQ and the network.
+services:
+  ai:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STATE_DIR: /data
+      RUN_JOURNAL_PATH: /data/run-journal.sqlite
+      RABBITMQ_URL: ${AI_CONTAINER_RABBITMQ_URL:?Set a RabbitMQ URL reachable on the Backend network}
+      BUSINESS_MCP_URL: http://business-mcp:8101/mcp
+      RAG_MCP_URL: http://rag-mcp:8102/mcp
+    ports:
+      - "127.0.0.1:8100:8100"
+    networks:
+      - backend
+    volumes:
+      - ai-state:/data
+    stop_grace_period: 30s
+
+volumes:
+  ai-state:
+
+networks:
+  backend:
+    name: ${BACKEND_NETWORK:-backend_default}
+    external: true

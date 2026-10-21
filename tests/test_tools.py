@@ -6,7 +6,6 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 
-from app.agent.demo import INPUTS, DemoTools, example_state
 from app.agent.schemas import AgentContext, Evidence, RetrievedRecord
 from app.agent.settings import Settings
 from app.agent.tools import (
@@ -17,6 +16,7 @@ from app.agent.tools import (
     evidence_groups,
     validate_evidence,
 )
+from tests.support import INPUTS, DemoTools, example_state
 
 
 def gateway(source=None, settings=None):

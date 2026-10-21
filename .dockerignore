@@ -1,0 +1,7 @@
+**
+!app/
+!app/**
+app/**/__pycache__/
+app/**/*.pyc
+!pyproject.toml
+!uv.lock

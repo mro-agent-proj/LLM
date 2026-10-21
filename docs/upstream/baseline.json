@@ -1,0 +1,29 @@
+{
+  "repository": "https://github.com/mro-agent-proj/LLM",
+  "commit": "fd80da3f29869a833b38c21803bf2de0e743dda3",
+  "files": {
+    "app/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "app/agent/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "app/agent/demo.py": "4242c8bb5986d1809ad9ed17900881e72a62a8f4d724634c7b8d3005538f4de1",
+    "app/agent/evaluation.py": "3f348885e5ad14b6e948c08a65ce114c6fe6ed9a7fc988c4e010570eee90b716",
+    "app/agent/mcp_client.py": "33717ac89aa5448672d959e00785778e2d616383d435f4d394e003676988309e",
+    "app/agent/model.py": "3e38504de50adb58da64e38b214c0e5b20c0d734acd5ae48e85d6cd7c956c7f4",
+    "app/agent/nodes/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "app/agent/nodes/common.py": "a1f50d072d4f11c8d10fcf0c12f33128869da0e06edd3ed480ad6e4fffca8d63",
+    "app/agent/nodes/investigate.py": "677175bf62fe466cc80a372420999b216220fefba01871615b10116ec494c965",
+    "app/agent/nodes/review.py": "b1eac5b67e985b4556e92a324eff7a5ab2d25d4435e9123f1e8d14cd33769996",
+    "app/agent/prompts.py": "0232ff6390d7b42d3bb1af07b75b723eb2773de15e87132b3198aea31aac02f0",
+    "app/agent/runtime.py": "2214be0cb89e83c52323b5e208a4430a717e66449f945cee96a542ec938352ca",
+    "app/agent/schemas.py": "773dc7814f85d4581581216708b2a8a7bbeba97549b0e8187552461b9f7e3e5d",
+    "app/agent/settings.py": "e983e1193c2584bca08351eb52db3dd30f0d95d65f4f1ea9919160311ae023d0",
+    "app/agent/tools.py": "3d3ce1db82aa7ec75e6d087fd89d46ce9275ebd6d445855819f841cf0fe46c2b",
+    "app/agent/transport.py": "9bc4c5550a7fcb13a1045424a0531865fe4e1dcce264fc421cd602031425c988",
+    "app/agent/workflow.py": "dc227d32d22758bff05af80c6fadc67372474bbf635d45c56d4de961a65f1ce1"
+  },
+  "purpose": "Historical initial import only; hashes do not assert current files are unchanged.",
+  "integrated_service": {
+    "branch": "from-scratch-llm23-service",
+    "commit": "ecd915af2b5360bd37c015a7ef10dd9317b3c200",
+    "integration": "LLM2/3 nodes and prompts adopted; service adapted to the single FastAPI LLM1/2/3 runner"
+  }
+}

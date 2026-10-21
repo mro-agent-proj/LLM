@@ -1,0 +1,189 @@
+import copy
+
+import pytest
+
+from app.agent.classification import ClassificationDecision
+from app.agent.full_workflow import build_full_graph
+from app.agent.nodes.classify import run_classify
+from app.agent.runtime import AgentRuntime
+from app.agent.settings import Settings
+from tests.llm1_fixtures import BusinessTools, FullModel
+from tests.support import example_state
+
+
+@pytest.mark.asyncio
+async def test_sufficient_uses_business_only_and_revalidates_before_assign():
+    tools, model = BusinessTools(), FullModel()
+    state = await build_full_graph(AgentRuntime(model, tools)).ainvoke(example_state())
+    payload = state["agent_context"]["prepared_payload"]
+    assert payload["outcome"] == "ASSIGN"
+    assert payload["evidence"][0]["ref_id"] == "MH-000123"
+    assert all(call == ("business",) for call in tools.server_calls)
+    assert sum(name == "get_aircraft_history" for name, _ in tools.calls) == 2
+    assert state["investigations"] == state["reviews"] == []
+
+
+@pytest.mark.asyncio
+async def test_insufficient_routes_to_existing_llm23_and_preserves_classification():
+    tools, model = BusinessTools(), FullModel(False)
+    state = await build_full_graph(AgentRuntime(model, tools)).ainvoke(example_state())
+    assert not state["classification"].sufficient
+    assert len(state["investigations"]) == len(state["reviews"]) == 1
+    assert state["agent_context"]["prepared_payload"]["outcome"] == "ASSIGN"
+    assert any(name == "get_evidence" for name, _ in tools.calls)
+
+
+@pytest.mark.asyncio
+async def test_full_graph_keeps_two_reinvestigations():
+    state = await build_full_graph(
+        AgentRuntime(FullModel(False, supplements=10), BusinessTools())
+    ).ainvoke(example_state())
+    assert state["retry_count"] == 2
+    assert len(state["investigations"]) == 3
+    assert state["agent_context"]["prepared_payload"]["review_reason"] == "RETRY_LIMIT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"linked_history_ids": []},
+        {"linked_history_ids": ["MH-999999"]},
+        {"linked_history_ids": ["MH-000123", "MH-000123"]},
+        {"proposed_department": "UNKNOWN"},
+    ],
+)
+async def test_invalid_model_links_never_assign(changes):
+    state = await build_full_graph(AgentRuntime(FullModel(**changes), BusinessTools())).ainvoke(
+        example_state()
+    )
+    assert state["classification"] is None
+    assert state["agent_context"]["prepared_payload"]["review_reason"] == "VALIDATION_FAILED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation", ["other_aircraft", "missing_aircraft", "unlinked_department", "error"]
+)
+async def test_history_scope_or_failure_is_not_normal_insufficiency(mutation):
+    tools, model = BusinessTools(), FullModel()
+    if mutation == "other_aircraft":
+        tools.history[0]["aircraft_id"] = "OTHER"
+    elif mutation == "missing_aircraft":
+        del tools.history[0]["aircraft_id"]
+    elif mutation == "unlinked_department":
+        tools.history[0]["department_id"] = "OTHER"
+    else:
+        tools.on_call = lambda name, args, result: (
+            {"status": "ERROR", "error": {"code": "UPSTREAM_UNAVAILABLE", "retryable": False}}
+            if name == "get_aircraft_history"
+            else result
+        )
+    state = await build_full_graph(AgentRuntime(model, tools)).ainvoke(example_state())
+    assert state["classification"] is None
+    assert state["agent_context"]["prepared_payload"]["outcome"] == "HUMAN_REVIEW"
+
+
+@pytest.mark.asyncio
+async def test_no_history_is_a_valid_false_classification_not_a_tool_error():
+    tools = BusinessTools()
+    tools.history = []
+    state = await run_classify(
+        example_state(),
+        AgentRuntime(FullModel(False, linked_history_ids=[], proposed_department=None), tools),
+    )
+    assert state["classification"].sufficient is False
+    assert state["agent_context"]["hold"] is None
+
+
+@pytest.mark.asyncio
+async def test_pagination_reads_next_page_without_symptom_or_date_filter():
+    tools, model = BusinessTools(), FullModel()
+
+    def pages(name, args, response):
+        if name == "get_aircraft_history" and "cursor" not in args:
+            response["items"][0]["history_id"] = "MH-000001"
+            response["next_cursor"] = "PAGE2"
+        return response
+
+    tools.on_call = pages
+    result = await run_classify(example_state(), AgentRuntime(model, tools))
+    assert result["classification"].linked_history_ids == ["MH-000123"]
+    calls = [a for n, a in tools.calls if n == "get_aircraft_history"]
+    assert len(calls) == 2 and calls[-1]["cursor"] == "PAGE2"
+    assert all("query" not in a and "occurred_from" not in a for a in calls)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_pages_do_not_become_a_false_classification():
+    tools = BusinessTools()
+    tools.on_call = lambda n, a, r: (
+        {**r, "next_cursor": "NEXT"} if n == "get_aircraft_history" else r
+    )
+    result = await run_classify(
+        example_state(), AgentRuntime(FullModel(), tools, Settings(max_tool_calls=3))
+    )
+    assert result["classification"] is None
+    assert result["agent_context"]["hold"]["reason"] == "TOOL_LIMIT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["removed", "inactive", "version", "department", "quote"])
+async def test_direct_finalization_rejects_stale_evidence(change):
+    tools = BusinessTools()
+
+    def mutate(name, args, result):
+        count = sum(n == name for n, _ in tools.calls)
+        if name == "get_request_context" and count == 2 and change == "version":
+            result["context_version"] = result["result"]["context_version"] = 2
+        if name == "search_departments" and count == 2 and change == "inactive":
+            result["items"][0]["active"] = False
+        if name == "get_aircraft_history" and count == 2:
+            if change == "removed":
+                result.update(status="NO_MATCH", items=[])
+            elif change == "department":
+                result["items"][0]["department_id"] = "OTHER"
+            elif change == "quote":
+                result["items"][0]["symptom"] = "changed symptom"
+        return result
+
+    tools.on_call = mutate
+    state = await build_full_graph(AgentRuntime(FullModel(), tools)).ainvoke(example_state())
+    assert state["agent_context"]["prepared_payload"]["review_reason"] == "VALIDATION_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_new_department_fcs_and_uuid_directory_mapping_work_without_hardcoding():
+    tools = BusinessTools()
+    tools.departments[0].update(code="FCS", department_id="department-uuid", ata_chapters="27")
+    tools.history[0].update(department_id="department-uuid", ata_chapter="27", jasc_code="2750")
+    result = await run_classify(
+        example_state(), AgentRuntime(FullModel(proposed_department="FCS", ata_chapter="27"), tools)
+    )
+    assert result["classification"].proposed_department == "FCS"
+
+
+@pytest.mark.asyncio
+async def test_unknown_ata_has_an_explicit_hold_without_invented_classification():
+    class Unknown:
+        async def complete(self, schema, system, context):
+            return ClassificationDecision(
+                classification=None, missing_information="증상 추가 설명 필요"
+            )
+
+    result = await run_classify(example_state(), AgentRuntime(Unknown(), BusinessTools()))
+    assert result["classification"] is None
+    assert result["agent_context"]["hold"]["reason"] == "INSUFFICIENT_INFORMATION"
+
+
+@pytest.mark.asyncio
+async def test_input_unchanged_and_llm_failures_propagate():
+    class Broken:
+        async def complete(self, *args):
+            raise RuntimeError("provider failed")
+
+    state = example_state()
+    original = copy.deepcopy(state)
+    with pytest.raises(RuntimeError):
+        await run_classify(state, AgentRuntime(Broken(), BusinessTools()))
+    assert state == original

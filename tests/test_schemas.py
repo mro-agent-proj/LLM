@@ -61,7 +61,7 @@ def test_excerpt_maximum():
         Evidence(source="SDR", ref_id="SDR-TEST", excerpt="a" * 301, why="비교")
 
 
-def test_public_output_fields_still_match_pdf():
+def test_investigation_review_and_evidence_fields():
     assert set(Investigation.model_fields) == {
         "ata_chapter",
         "finding",
