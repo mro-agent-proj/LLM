@@ -1,111 +1,58 @@
-# MRO LLM2·3 — 조사·검토와 근거 검증
+# MRO AI 서버: LLM1·2·3
 
-팀 인터페이스 PDF 본문 v0.3을 우선하고, 읽기 도구의 상세 입력·반환은 Google MCP v1.0 및 팀 RAG 구현을 따른다.
-외부 Investigation / Review / Evidence 모델은 유지한다. 실제 배정과 요청 상태 변경은 Spring 책임이다.
+FastAPI가 서버 시작·종료와 상태 확인을 맡고, Spring과는 RabbitMQ로 통신합니다. LangChain으로 모델과 MCP를 호출하고 LangGraph로 LLM1→LLM2→LLM3 및 재조사 흐름을 실행합니다. LLM1은 사용자 지정 OpenAI `gpt-4o-mini`와 확정한 [분류 기준](docs/classification-criteria.md)을 사용합니다.
 
-## 현재 범위
+## 실행
 
-- LLM2: 현재 질문에 필요한 B01~B03, R01~R05를 선택하고 근거 있는 조사안을 작성.
-- LLM3: 조사안 검토, 추가 근거 확인, PASS / SUPPLEMENT / HUMAN.
-- 최종 검증 노드: 접수 상태·범위 버전·부서·LLM2와 LLM3의 최종 인용 근거를 재조회하고 체크포인트에 기록.
-- SUPPLEMENT 재조사 최대 2회. 컨텍스트 변경 시 폐기한 판단을 보존하고 별도 1회만 범위를 다시 읽어 조사.
-- 원문·출처·위치·데이터/색인 버전 변경, 반복 컨텍스트 변경은 자동 인계 중단.
-- R04는 내부 참고용. 핵심 판단이 기술자료에 의존하면 기존 외부 형식을 유지하며 사람 검토로 인계.
-- 평가 모델은 OpenAI gpt-4o-mini로 선택. 모델 교체는 가능하며 실제 LLM 품질 결과는 아직 없다.
-
-이 저장소는 LLM1·RabbitMQ 소비자·Spring·업무 DB·실제 MCP 서버를 구현하지 않는다.
-팀 MCP 원본 데이터와의 종단 간 연동은 별도 확인해야 한다.
-
-## 설치와 오프라인 확인
-
-Python 3.12와 uv를 사용한다.
-
-~~~sh
-uv sync --locked
-uv run pytest -q
-uv run ruff check app tests
-uv run python -m app.agent.demo
-uv run python -m app.agent.evaluation
-~~~
-
-데모와 기본 평가는 합성 자료·응답 대역만 사용하며 API 키가 필요 없다.
-평가의 8개 기대 경로는 평가기에만 있고 모델 입력과 검색 자료에 넣지 않는다.
-기대 경로 일치는 실제 고장 진단·검색 품질·정비 성공률이 아니다.
-
-## 실제 모델 품질 평가 준비
-
-.env.example은 LLM_MODEL=gpt-4o-mini, LLM_PROVIDER=openai다.
-로컬 .env에서 LLM_API_KEY를 설정하거나 기존 환경의 OPENAI_API_KEY를 사용할 수 있다.
-명시한 LLM_API_KEY가 우선하며, OpenAI 제공사에서만 OPENAI_API_KEY를 대체로 사용한다.
-기존 .env를 덮어쓰지 않는다. 키는 채팅이나 Git에 넣지 않는다.
-제공사 모델은 LangChain with_structured_output을 지원해야 한다.
-OpenAI 제공사를 선택할 때만 해당 SDK extra를 설치한다.
-
-이번 버전에서는 사용자 결정에 따라 실제 LLM 평가를 수행하지 않았다.
-
-~~~sh
+```sh
 uv sync --locked --extra openai
-uv run python -m app.agent.evaluation --live-model --case supported_handoff
-~~~
+cp .env.example .env  # 새 환경에서만 실행. 기존 .env는 보존하세요.
+uv run --extra openai uvicorn app.main:app --host 127.0.0.1 --port 8100 --workers 1
+```
 
---live-model은 실제 모델 사용량을 발생시킨다. 도구와 자료는 여전히 합성이다.
-먼저 한 사례에서 도구 선택·조사·검토를 사람이 확인한 후 전체 8개로 확대한다.
-현재 어댑터가 토큰 사용량을 수집하지 않으므로 token_usage=null이며 비용 0을 뜻하지 않는다.
-평가 범위와 수동 검토 기준은 EVALUATION.md에 있다.
+`.env`의 `LLM_API_KEY`에 키를 설정합니다. 기본 `AI_MODE=disabled`에서는 HTTP 상태 확인만 가능합니다. `/health/live`는 프로세스 상태, `/health/ready`는 큐 소비 준비 상태를 반환합니다. 실행 HTTP API는 제공하지 않습니다.
 
-## 팀 실행기 연결
+## 실행 흐름
 
-~~~python
-from app.agent.runtime import runtime_for_request
-from app.agent.workflow import build_graph, completion_payload
+```text
+Spring → RabbitMQ mro.agent.run → FastAPI lifespan의 소비자
+  → LLM1: business-mcp B01/B02/B03
+      충분 → B01/B02/B03 재검증 → COMPLETED(ASSIGN)
+      부족 → 기존 LLM2 조사 → LLM3 검토 → 최종 근거 재검증
+      오류·검증 실패 → 사람 검토 또는 FAILED
+  → RabbitMQ mro.agent.events → Spring이 실제 상태 변경·배정
+```
 
-# Backend가 이 실행/접수/사용자 범위에 발급한 토큰을 실행기가 전달한다.
-# 토큰 발급·전달 경로는 Backend 담당 모듈에서 연결해야 한다.
-runtime = runtime_for_request(rag_token=backend_delegation)
-graph = build_graph(runtime, checkpointer=team_checkpointer)
-config = {"configurable": {"thread_id": initial_state["request_id"]}}
-state = await graph.ainvoke(initial_state, config)
-payload = await completion_payload(state, runtime)
-# 실행기가 mro.agent.events에 COMPLETED를 발행. 실제 배정은 Spring.
-~~~
+LLM1은 동일 기체 이력의 모든 페이지를 제한된 도구 호출 예산 안에서 읽습니다. 페이지를 다 읽지 못하면 이력 없음으로 판단하지 않습니다. 위치·발생 조건의 완전 일치, 최근 30일, 최소 2건을 필수 조건으로 추가하지 않았습니다. `ClassificationDecision`은 ATA 등을 생성할 수 없는 경우를 표현하는 내부 래퍼이며 외부 `Classification` 5개 필드는 그대로입니다.
 
-build_graph는 LLM1 sufficient=False 이후 진입하는 부분 그래프다.
-최종 finalize 노드가 원문을 재조회하므로 완료된 state에는 최종 검증 호출 기록과 prepared_payload가 포함된다.
-completion_payload는 이 검증 결과를 추출한다. 오래된 완료 체크포인트의 payload를 새 실행에 재사용하지 않는다.
-이미 완료된 그래프를 재발행해야 한다면 Spring의 현재 상태·이벤트 중복 방지 정책을 적용하고,
-새 결정이 필요하면 finalize_state 결과를 체크포인트에 반영한 뒤 발행해야 한다.
-단독 노드 조합은 finalize_state의 반환값을 저장해야 최종 검증 기록이 남는다.
+기존 LLM2·3와 공통 모듈은 [fd80da3](https://github.com/mro-agent-proj/LLM/tree/fd80da3f29869a833b38c21803bf2de0e743dda3)에서 가져와 수정하지 않았습니다. 해시는 `docs/upstream/baseline.json`, 이전 설명은 `docs/upstream/`에 보존했습니다. 기존 `workflow.build_graph`는 LLM2·3 부분 그래프이며 전체 실행은 `full_workflow.build_full_graph`입니다.
 
-PDF 경로의 investigate(state), review(state)를 직접 사용하는 실행기는 요청 범위 런타임을 바인딩할 수 있다.
+## 실제 연결 전에 필요한 합의
 
-~~~python
-from app.agent.runtime import using_runtime
-with using_runtime(runtime):
-    output = await investigate(state)
-~~~
+- Backend의 요청별 위임 토큰 발급·실행 컨텍스트 생성·전달 방식과 B01 읽기 권한이 남아 있습니다. request_id만으로 권한을 대신하지 않습니다.
+- `MCP_DELEGATION_TRANSPORT=amqp_headers` 어댑터는 구현 제안입니다. 팀 합의가 아니며 기본값은 `unconfigured`입니다. Backend가 AMQP 헤더 `x-mro-business-token`, `x-mro-rag-token`을 요청별로 제공하고 MCP가 검증할 수 있을 때만 선택합니다. 토큰은 모델·이벤트·journal에 넣지 않습니다.
+- 합의 후 `AI_MODE=rabbit`, `RABBITMQ_URL`, 모델 키·MCP URL을 설정합니다. 토큰 전달 설정이 없으면 큐 소비를 시작하지 않고 readiness 503을 반환합니다. readiness 200은 큐 연결 상태이며 실제 MCP·모델 품질 검증 결과가 아닙니다.
+- 컨텍스트가 변경되면 새 위임이 필요합니다. 전체 그래프는 기존 토큰으로 자동 재조사하지 않고 사람 검토로 종료합니다. 토큰 갱신 계약은 후속 연결 사항입니다.
+- B03은 `code` 또는 부서 코드인 `department_id`를 제공해야 합니다. B01의 resolved_scope와 RAG의 applied_scope에는 동일한 locked_filters가 필요합니다. UUID 부서 ID만 반환하면 연결할 수 없습니다.
+- SDR 운항사 매핑과 Backend의 `VALIDATION_FAILED` 사유 보존도 기존 미해결 항목입니다.
 
-공유 프로세스에 사용자 토큰을 전역 캐시하거나 GraphState에 넣지 않는다.
-토큰 없이 기본 get_runtime을 사용하면 인증이 필요한 팀 RAG에는 연결할 수 없다.
+## RabbitMQ와 복구
 
-## 실행기와 Spring이 연결할 사항
+Spring이 선언한 exchange `mro.agent`, queue `mro.agent.run`, routing key `agent.event`를 사용합니다. AI는 수동적 존재 확인만 하며 큐·익스체인지를 새로 생성하지 않습니다. prefetch=1, 발행 확인 후 ACK, 복구 불가 시 reject(requeue=false)를 적용합니다.
 
-- RabbitMQ: Spring이 선언한 큐/익스체인지를 소비·발행. prefetch=1.
-- 각 LLM 단계에서 STAGE_STARTED / STAGE_RESULT 발행. 내부 보류 시 가짜 Investigation 이벤트를 만들지 않음.
-- 그래프 예외는 FAILED. COMPLETED/FAILED 발행 성공 뒤 ACK. 영구 실패는 reject(requeue=false).
-- event_id 재사용과 중복 처리, 늦은 이벤트 차단, 5분 기한, 실제 Postgres 체크포인트 연결.
-- 최종 검증과 실제 배정 사이의 동시 변경은 Spring이 다시 검사.
-- LLM1 sufficient=True 직접 경로 및 정비팀 수락/거절·사람 검토는 별도 모듈.
+전체 처리 예산은 최대 295초, 그래프는 최대 280초로 실패 이벤트 발행 시간을 남깁니다. 발행 확인 재시도는 같은 이벤트 ID·본문을 사용합니다. 로컬 `RUN_JOURNAL_PATH`의 SQLite에는 토큰 없이 이벤트를 발행 전에 저장하고 완료된 요청 재전달 시 같은 이벤트를 재발행합니다. 중간에 중단된 그래프는 접수·권한을 다시 조회해 시작합니다.
 
-## MCP 계약
+이 journal은 LangGraph의 영구 체크포인트가 아닙니다. 현재는 단일 worker와 지속되는 로컬 볼륨을 전제로 하며 다중 인스턴스, 동일 request_id의 별도 새 실행, 운영용 체크포인트는 실행 ID·저장소 계약을 추가해야 합니다. 공유 업무 DB에는 접근하거나 쓰지 않습니다. Backend의 접수 후 5분 제한과 늦은 이벤트 차단은 계속 적용됩니다.
 
-business: get_request_context / get_aircraft_history / search_departments
-rag: search_jasc_codes / search_sdr_cases / search_amm_references / search_technical_docs / get_evidence
+## 검증 상태
 
-서버가 제공한 실제 inputSchema로 입력을 검사한다. tool_inputs.json은 합성 데모용 입력 계약 보존본이다.
-필수 도구가 빠지면 MCPContractError로 중단한다. R04만 팀 서버 미구현 시 선택 기능으로 허용한다.
-쓰기 도구는 노출하지 않는다. 도구 호출 10초, 일시적 실패 재시도 1회, 노드별 호출 한도 8회가 기본값이다.
+추가 구현 테스트 36건과 Ruff 검사를 통과한 뒤 사용자의 빠른 공유 요청에 따라 추가 테스트를 중단했습니다. 이후 이벤트 발행 실패 처리, SQLite 연결 종료, RabbitMQ 종료 처리의 작은 보완은 재실행하지 않았습니다. 기존 LLM2·3 기준 버전은 이전 검토에서 65건을 통과했습니다.
 
-현재 SDK 조합은 mcp 1.30.0 / langchain-mcp-adapters 0.2.2이며 lock에 고정됐다.
-어댑터의 streamable_http_client 명칭 변경 경고가 남는다.
+실제 OpenAI 호출, 실제 팀 MCP·RabbitMQ·DB 종단 간 검증, S01~S23 모델 분류 정확도 평가는 수행하지 않았습니다. 합성 응답 테스트를 모델 정확도로 해석하지 않습니다.
 
-상세 계약: INTERFACE.md / 검증 기록: VALIDATION.md.
+## 참고 문서
+
+- [FastAPI lifespan](https://fastapi.tiangolo.com/advanced/events/)
+- [LangGraph의 그래프 연결](https://docs.langchain.com/oss/python/langgraph/use-subgraphs)
+- [RabbitMQ 발행 확인](https://docs.aio-pika.com/rabbitmq-tutorial/7-publisher-confirms.html)
+- [팀 LLM2·3 인터페이스](docs/upstream/INTERFACE.md)

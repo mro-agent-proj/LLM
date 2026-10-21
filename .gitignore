@@ -1,6 +1,30 @@
+# Local credentials; keep the empty template versioned.
 .env
+.env.*
+!.env.example
+
+# Python environments and generated files.
 .venv/
+venv/
 __pycache__/
+*.py[cod]
 .pytest_cache/
 .ruff_cache/
-*.pyc
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local data, reference documents, execution records and checkpoints.
+/data/
+/references/
+/artifacts/
+/checkpoints/
+/logs/
+*.log
+
+# OS metadata.
+.DS_Store
