@@ -161,6 +161,13 @@ class GraphState(TypedDict):
     stage_events: NotRequired[list[dict[str, Any]]]
 
 
+QUESTION_FALLBACK = {
+    "CALL": "도구 호출로 확인할 판단 조건 (모델이 비워 둠)",
+    "FINISH": "근거가 갖춰져 조사안을 작성함 (모델이 비워 둠)",
+    "HOLD": "근거로 부서를 정할 수 없어 보류함 (모델이 비워 둠)",
+}
+
+
 class NextStep(MaintenanceModel):
     """Internal tool selection. Does not change the team's MCP input schemas."""
 
@@ -175,10 +182,15 @@ class NextStep(MaintenanceModel):
     def blank_optional_is_null(cls, data: Any) -> Any:
         # Models often send "" for an unused optional field; that means null, not a failed run.
         if isinstance(data, dict):
-            return {
+            data = {
                 k: None if k in {"tool_name", "arguments_json", "hold_reason"} and v == "" else v
                 for k, v in data.items()
             }
+            # question is a trace/hold note, not a decision input. A blank one (seen on FINISH)
+            # failed the run twice in a row: the repair hint "use null" cannot fix a required field.
+            question = data.get("question")
+            if question is None or (isinstance(question, str) and not question.strip()):
+                data["question"] = QUESTION_FALLBACK.get(data.get("action"), "다음 단계 판단")
         return data
 
     @model_validator(mode="after")
