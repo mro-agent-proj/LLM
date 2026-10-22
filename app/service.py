@@ -1,6 +1,8 @@
 """Execute an aircraft request, resume its investigation, and publish stage results."""
 
 import asyncio
+import logging
+import traceback
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -9,6 +11,15 @@ from langgraph.errors import GraphRecursionError
 from app.agent.full_workflow import build_full_graph
 from app.agent.runtime import AgentRuntime
 from app.messages import RunRequest, event
+
+logger = logging.getLogger(__name__)
+
+
+def _where(exc: BaseException) -> str:
+    """Last code locations of the failure, never its message (it may hold model output or URLs)."""
+    frames = traceback.extract_tb(exc.__traceback__)[-4:]
+    places = (f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno}:{f.name}" for f in reversed(frames))
+    return " <- ".join(places)
 
 
 class EventPublisher(Protocol):
@@ -92,6 +103,10 @@ class MaintenanceService:
                 else "GRAPH_LIMIT"
                 if isinstance(exc, GraphRecursionError)
                 else "AI_EXECUTION_FAILED"
+            )
+            logger.error(
+                "run %s failed with %s (%s) at %s",
+                run.request_id, code, type(exc).__name__, _where(exc),
             )
             saved = await graph.aget_state(config)
             if _terminal(saved.values) is not None:

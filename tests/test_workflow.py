@@ -317,7 +317,8 @@ async def test_context_version_change_at_final_gate_cannot_assign_old_plan():
     tools = DemoTools()
 
     def change(name, args, result):
-        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) == 3:
+        # B01 runs at the start of the investigation and at the final gate (call 2), not per stage.
+        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) == 2:
             tools.version = 2
             result["context_version"] = 2
             result["result"]["context_version"] = 2
@@ -351,7 +352,8 @@ async def test_final_context_read_failure_never_reuses_stale_context():
     tools = DemoTools()
 
     def fail(name, args, result):
-        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) >= 3:
+        # call 2 is the final gate
+        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) >= 2:
             return {"status": "ERROR", "error": {"code": "OFFLINE", "retryable": False}}
         return result
 
@@ -366,7 +368,8 @@ async def test_repeated_context_changes_stop_after_one_context_refresh():
     tools = DemoTools()
 
     def change(name, args, result):
-        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) % 3 == 0:
+        # every second call is a final gate
+        if name == "get_request_context" and sum(n == name for n, _ in tools.calls) % 2 == 0:
             tools.version += 1
             result["context_version"] = tools.version
             result["result"]["context_version"] = tools.version
@@ -430,3 +433,14 @@ async def test_amm_reference_failure_never_blocks_assignment():
     payload = await completion_payload(state, runtime)
     assert payload["outcome"] == "ASSIGN" and "reference_amm" not in payload
     assert state["agent_context"]["traces"][-1]["outcome"] == "ERROR"
+
+
+
+@pytest.mark.asyncio
+async def test_request_context_is_read_at_start_and_final_gate_only():
+    tools = DemoTools()
+    runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    assert (await completion_payload(state, runtime))["outcome"] == "ASSIGN"
+    # investigation start + final gate; the review stage reuses the confirmed context
+    assert sum(n == "get_request_context" for n, _ in tools.calls) == 2

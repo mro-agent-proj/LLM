@@ -153,14 +153,18 @@ async def prepare(state: GraphState, runtime: AgentRuntime) -> tuple[AgentContex
     context.final_evidence = []
     tools = await runtime.tools("business", "rag")
     gateway = ToolGateway(tools, state, context, runtime.settings)
-    result = await gateway.call(
-        "get_request_context", {}, "현재 접수·기체·검색 조건 버전이 유효한가?"
-    )
-    if context.hold is not None:
-        return context, gateway
-    if result.get("status") != "OK":
-        hold_update(context, "VALIDATION_FAILED", "현재 접수 컨텍스트를 확인하지 못했습니다.")
-        return context, gateway
+    # B01 is read when the run starts (LLM1) and right before the final decision. Between stages the
+    # confirmed context (version, scope) carries over, and the backend rechecks the request when it
+    # applies the result, so a per-stage re-read adds calls without new information.
+    if context.context_version is None or not context.request_context:
+        result = await gateway.call(
+            "get_request_context", {}, "현재 접수·기체·검색 조건 버전이 유효한가?"
+        )
+        if context.hold is not None:
+            return context, gateway
+        if result.get("status") != "OK":
+            hold_update(context, "VALIDATION_FAILED", "현재 접수 컨텍스트를 확인하지 못했습니다.")
+            return context, gateway
     await gateway.call(
         "search_departments",
         {"query": state["symptom_text"][:2000], "limit": 20},

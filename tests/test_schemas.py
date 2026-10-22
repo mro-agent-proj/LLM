@@ -71,3 +71,27 @@ def test_investigation_review_and_evidence_fields():
         "rationale",
     }
     assert set(Review.model_fields) == {"decision", "department", "comments", "supplement_request"}
+
+
+def test_blank_next_step_question_does_not_fail_the_run():
+    from app.agent.schemas import NextStep
+
+    finish = NextStep.model_validate(
+        {
+            "action": "FINISH",
+            "question": "",
+            "tool_name": "",
+            "arguments_json": None,
+            "hold_reason": None,
+        }
+    )
+    assert finish.question.startswith("근거가 갖춰져") and finish.tool_name is None
+    missing = NextStep.model_validate(
+        {
+            "action": "HOLD",
+            "tool_name": None,
+            "arguments_json": None,
+            "hold_reason": "INSUFFICIENT_EVIDENCE",
+        }
+    )
+    assert missing.question.startswith("근거로 부서를")
