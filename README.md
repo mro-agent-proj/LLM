@@ -106,7 +106,7 @@ uv run --extra openai ruff check app tests
 
 ## 검증 상태 (2026-10-21, 실제 스택)
 
-backend·MCP·OpenAI를 모두 붙여 backend `seed/scenarios.md`의 S01~S23을 실제로 돌렸습니다(`gpt-5.4-mini`).
+backend·MCP·OpenAI를 모두 붙여 backend `data/eval/scenarios.md`의 S01~S23을 실제로 돌렸습니다(`gpt-5.4-mini`).
 
 | 구분 | 결과 |
 | --- | --- |
