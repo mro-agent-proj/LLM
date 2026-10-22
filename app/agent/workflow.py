@@ -15,6 +15,7 @@ from app.agent.tools import (
     EvidenceValidationError,
     ToolGateway,
     get_context,
+    reference_amm,
     validate_department,
     validate_evidence,
 )
@@ -238,6 +239,16 @@ async def finalize_state(state: GraphState, runtime: AgentRuntime) -> dict:
                     "summary": f"{investigation.finding}\n{latest_review(state).comments}",
                     "evidence": [e.model_dump(mode="json") for e in evidence],
                 }
+                sdr_ids = sorted({e.ref_id for e in evidence if e.source == "SDR"})[:10]
+                if sdr_ids:
+                    found = await gateway.reference(
+                        "get_sdr_amm_references",
+                        {"evidence_ids": sdr_ids},
+                        "근거로 쓴 SDR에 인용된 AMM 참고번호는? (정비팀 전달용, 근거 아님)",
+                    )
+                    references = reference_amm(found, state["request_id"], set(sdr_ids))
+                    if references:
+                        payload["reference_amm"] = references
             except EvidenceValidationError as exc:
                 if context.hold is None:
                     hold_update(context, "VALIDATION_FAILED", str(exc))

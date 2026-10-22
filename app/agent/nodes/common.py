@@ -78,7 +78,12 @@ def llm1_rejected_history(state: GraphState) -> bool:
 
 
 def citable(record, state: GraphState, cited: set[str]) -> bool:
-    """History LLM1 compared and linked nothing from is not evidence for LLM2."""
+    """History LLM1 compared and linked nothing from is not evidence for LLM2.
+
+    AMM rows are reference numbers quoted in SDR text, attached after assignment, never evidence.
+    """
+    if record.source == "AMM":
+        return False
     if record.source != "HISTORY":
         return True
     return record.ref_id in cited or not llm1_rejected_history(state)
@@ -90,13 +95,17 @@ def usable_evidence(context: AgentContext, state: GraphState) -> bool:
     return any(citable(r, state, cited) for r in context.records)
 
 
+# AMM is a handoff reference, not evidence: the executor looks it up after the decision.
+REFERENCE_ONLY_TOOLS = {"search_amm_references", "get_sdr_amm_references"}
+
+
 def hidden_tools(context: AgentContext, state: GraphState, stage: str) -> set[str]:
     """LLM1 already compared every history page; with no linked row there is nothing to re-read."""
     linked = (_plain(state.get("classification")) or {}).get("linked_history_ids") or []
     read_by_llm1 = any(r.source == "HISTORY" for r in context.records)
     if stage == "INVESTIGATING" and not linked and read_by_llm1:
-        return {"get_aircraft_history"}
-    return set()
+        return {"get_aircraft_history", *REFERENCE_ONLY_TOOLS}
+    return set(REFERENCE_ONLY_TOOLS)
 
 
 def omitted_history(context: AgentContext, state: GraphState) -> int:
@@ -238,8 +247,8 @@ async def select_evidence(
             observations.append(
                 {
                     "error": "FINISH_WITHOUT_EVIDENCE",
-                    "note": "아직 조회한 근거가 없다. search_sdr_cases(영어 핵심어)나 "
-                    "search_amm_references로 먼저 사례를 조회한다.",
+                    "note": "아직 조회한 근거가 없다. search_sdr_cases(영어 핵심어)로 "
+                    "먼저 비슷한 사례를 조회한다.",
                 }
             )
             continue

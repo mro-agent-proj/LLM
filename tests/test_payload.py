@@ -122,12 +122,15 @@ def _investigation_state(linked):
 def test_history_tool_is_hidden_only_when_llm1_found_nothing_to_link():
     from app.agent.nodes.common import hidden_tools
 
+    # AMM tools are never offered: AMM is attached after assignment as a reference.
+    amm = {"search_amm_references", "get_sdr_amm_references"}
     read = AgentContext(request_id="r", records=[history(1)])
-    assert hidden_tools(read, _investigation_state([]), "INVESTIGATING") == {"get_aircraft_history"}
-    assert hidden_tools(read, _investigation_state(["MH-000001"]), "INVESTIGATING") == set()
-    assert hidden_tools(read, _investigation_state([]), "REVIEWING") == set()
+    no_link = _investigation_state([])
+    assert hidden_tools(read, no_link, "INVESTIGATING") == {"get_aircraft_history", *amm}
+    assert hidden_tools(read, _investigation_state(["MH-000001"]), "INVESTIGATING") == amm
+    assert hidden_tools(read, _investigation_state([]), "REVIEWING") == amm
     unread = AgentContext(request_id="r")
-    assert hidden_tools(unread, _investigation_state([]), "INVESTIGATING") == set()
+    assert hidden_tools(unread, _investigation_state([]), "INVESTIGATING") == amm
 
 
 async def test_hold_with_evidence_is_sent_back_once_then_accepted():

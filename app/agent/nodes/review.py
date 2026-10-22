@@ -85,7 +85,10 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
             assessment.technical_basis_ids,
         )
         return human_review(state, context, context.hold.summary)
-    additional = ground_evidence(assessment.additional_evidence, context)
+    # AMM is a handoff reference attached after assignment, not review evidence.
+    additional = ground_evidence(
+        [e for e in assessment.additional_evidence if e.source != "AMM"], context
+    )
     try:
         if output.department is not None:
             validate_department(output.department, context)

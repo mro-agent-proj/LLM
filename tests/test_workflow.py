@@ -34,7 +34,10 @@ async def test_full_pass_requires_fresh_document_validation():
     assert payload["department"] == "HYD"
     assert any(name == "get_evidence" for name, _ in tools.calls)
     assert state["agent_context"]["final_validation"] == "PASS"
-    assert state["agent_context"]["traces"][-1]["tool"] == "get_evidence"
+    # Revalidation comes last; only the post-decision AMM reference lookup follows it.
+    tools_called = [t["tool"] for t in state["agent_context"]["traces"]]
+    assert tools_called[-2:] == ["get_evidence", "get_sdr_amm_references"]
+    assert payload["reference_amm"][0]["amm_ref"] == "32-XX-XX"
     assert "agent_context" not in payload
     assert all(trace["question"] for trace in state["agent_context"]["traces"])
 
@@ -230,7 +233,7 @@ async def test_changed_source_version_is_not_silently_assigned():
 
 
 @pytest.mark.asyncio
-async def test_review_added_evidence_is_revalidated_and_included_in_final_payload():
+async def test_amm_is_never_evidence_but_attached_as_reference():
     class ReviewAddsEvidence(ScriptedDemoModel):
         async def complete(self, schema, system, context):
             data = json.loads(context)
@@ -263,11 +266,23 @@ async def test_review_added_evidence_is_revalidated_and_included_in_final_payloa
     state = await build_graph(runtime).ainvoke(example_state())
     payload = await completion_payload(state, runtime)
     assert payload["outcome"] == "ASSIGN"
-    assert {e["ref_id"] for e in payload["evidence"]} == {"EV-SDR-DEMO-001", "EV-AMM-DEMO-001"}
-    assert {a["evidence_id"] for n, a in tools.calls if n == "get_evidence"} == {
-        "EV-SDR-DEMO-001",
-        "EV-AMM-DEMO-001",
-    }
+    # The review's AMM citation is dropped from evidence and never revalidated as evidence.
+    assert {e["ref_id"] for e in payload["evidence"]} == {"EV-SDR-DEMO-001"}
+    assert {a["evidence_id"] for n, a in tools.calls if n == "get_evidence"} == {"EV-SDR-DEMO-001"}
+    # R03 is not offered to the planner, so the review's search request never reaches the server.
+    assert not any(n == "search_amm_references" for n, _ in tools.calls)
+    assert [a["evidence_ids"] for n, a in tools.calls if n == "get_sdr_amm_references"] == [
+        ["EV-SDR-DEMO-001"]
+    ]
+    assert payload["reference_amm"] == [
+        {
+            "sdr_ref_id": "EV-SDR-DEMO-001",
+            "amm_ref": "32-XX-XX",
+            "reference_level": "chapter_section",
+            "context": "SYNTHETIC AMM citation context only.",
+            "evidence_id": "EV-AMM-DEMO-001",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -278,7 +293,7 @@ async def test_final_revalidation_traces_are_checkpointed():
     await graph.ainvoke(example_state(), config)
     context = graph.get_state(config).values["agent_context"]
     assert context["final_validation"] == "PASS"
-    assert context["traces"][-1]["tool"] == "get_evidence"
+    assert [t["tool"] for t in context["traces"]][-2:] == ["get_evidence", "get_sdr_amm_references"]
     assert context["prepared_payload"]["outcome"] == "ASSIGN"
 
 
@@ -399,3 +414,19 @@ async def test_history_decision_is_revalidated_through_b02_not_r05():
     assert (await completion_payload(state, runtime))["evidence"][0]["ref_id"] == "MH-000123"
     assert sum(n == "get_aircraft_history" for n, _ in tools.calls) == 2
     assert not any(n == "get_evidence" for n, _ in tools.calls)
+
+
+@pytest.mark.asyncio
+async def test_amm_reference_failure_never_blocks_assignment():
+    tools = DemoTools()
+
+    def broken(name, args, result):
+        if name == "get_sdr_amm_references":
+            raise RuntimeError("reference server down")
+
+    tools.on_call = broken
+    runtime = AgentRuntime(model=ScriptedDemoModel(), tools=tools)
+    state = await build_graph(runtime).ainvoke(example_state())
+    payload = await completion_payload(state, runtime)
+    assert payload["outcome"] == "ASSIGN" and "reference_amm" not in payload
+    assert state["agent_context"]["traces"][-1]["outcome"] == "ERROR"

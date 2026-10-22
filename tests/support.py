@@ -221,6 +221,12 @@ class DemoTools:
         elif name == "search_amm_references":
             data["items"] = copy.deepcopy(self.amm_rows[: args.get("limit", 5)])
             data["warnings"] = ["AMM_REFERENCE_ONLY: not verified"]
+        elif name == "get_sdr_amm_references":
+            data["items"] = [
+                {**copy.deepcopy(r), "sdr_evidence_id": "EV-" + r["source_case_id"]}
+                for r in self.amm_rows
+                if "EV-" + r["source_case_id"] in args["evidence_ids"]
+            ]
         elif name == "search_technical_docs":
             data["items"] = [
                 copy.deepcopy(r)

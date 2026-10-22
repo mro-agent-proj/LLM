@@ -131,7 +131,10 @@ async def test_mcp_authorization_and_investigation_graph(monkeypatch):
         payload = await completion_payload(state, runtime)
         assert payload["outcome"] == "ASSIGN"
         assert payload["evidence"][0]["ref_id"] == "EV-SDR-DEMO-001"
-        assert state["agent_context"]["traces"][-1]["tool"] == "get_evidence"
+        # This fixture server has no AMM lookup: the reference is skipped, the assignment stands.
+        called = [t["tool"] for t in state["agent_context"]["traces"]]
+        assert called[-2:] == ["get_evidence", "get_sdr_amm_references"]
+        assert "reference_amm" not in payload
         assert seen_auth and all(v == b"Bearer synthetic-delegation" for v in seen_auth)
         assert "synthetic-delegation" not in str(state)
         context = get_context(state)
