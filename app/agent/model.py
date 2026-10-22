@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from typing import Any, Protocol, TypeVar
 
@@ -6,6 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 class StructuredModel(Protocol):
@@ -27,6 +29,13 @@ class LangChainModel:
                 output = await asyncio.wait_for(runnable.ainvoke(messages), timeout=self.timeout)
                 return output if isinstance(output, schema) else schema.model_validate(output)
             except ValidationError as exc:
+                # Field paths and error types only: the offending values may hold model output.
+                logger.warning(
+                    "%s output failed validation (attempt %d): %s",
+                    schema.__name__,
+                    attempt + 1,
+                    [(".".join(map(str, e["loc"])), e["type"]) for e in exc.errors()],
+                )
                 # One repair round: a malformed structured output should not end the whole run.
                 if attempt:
                     raise
