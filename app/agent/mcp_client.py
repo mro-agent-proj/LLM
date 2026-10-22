@@ -22,9 +22,10 @@ RAG_TOOLS = frozenset(
         "search_amm_references",
         "search_technical_docs",
         "get_evidence",
+        "get_sdr_amm_references",
     }
 )
-OPTIONAL_TOOLS = frozenset({"search_technical_docs"})
+OPTIONAL_TOOLS = frozenset({"search_technical_docs", "get_sdr_amm_references"})
 
 
 class MCPConfigurationError(RuntimeError):

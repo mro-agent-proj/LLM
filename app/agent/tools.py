@@ -27,7 +27,7 @@ SOURCE_TYPES = {
 }
 SEARCH_SOURCES = {
     "get_aircraft_history": {"HISTORY"},
-    "search_sdr_cases": {"SDR", "AMM"},
+    "search_sdr_cases": {"SDR"},
     "search_amm_references": {"AMM"},
     "search_technical_docs": {"TECHNICAL_DOC"},
 }
@@ -322,6 +322,27 @@ class ToolGateway:
                 result = _failure("INVALID_TOOL_RESULT", str(exc))
             break
         self._trace(name, args, question, result, attempt, started_at)
+        return result
+
+    async def reference(self, name: str, supplied: dict, question: str) -> dict:
+        """Informational lookup after the decision: traced, unbudgeted, never evidence or a hold."""
+        started_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        args = supplied
+        if name not in self.tools:
+            result = _failure("TOOL_NOT_AVAILABLE", name)
+        else:
+            try:
+                args = self.scoped_arguments(name, supplied)
+                raw = await asyncio.wait_for(
+                    self.tools[name].ainvoke(
+                        {"name": name, "args": args, "id": str(uuid4()), "type": "tool_call"}
+                    ),
+                    timeout=self.settings.tool_timeout,
+                )
+                result = decode_result(raw)
+            except Exception as exc:  # noqa: BLE001 - a reference must never fail the assignment
+                result = _failure("REFERENCE_UNAVAILABLE", type(exc).__name__)
+        self._trace(name, args, question, result, 1, started_at)
         return result
 
     def _accept(self, name: str, args: dict, result: dict) -> None:
@@ -628,6 +649,35 @@ class ToolGateway:
         self.context.records = [r for r in self.context.records if r.ref_id != identifier] + [
             record
         ]
+
+
+MAX_REFERENCE_AMM = 30
+
+
+def reference_amm(result: dict, request_id: str, sdr_ids: set[str]) -> list[dict]:
+    """AMM numbers quoted in the cited SDR text, for the maintenance team. Never evidence."""
+    if result.get("status") != "OK" or result.get("request_id") != request_id:
+        return []
+    rows = result.get("items") if isinstance(result.get("items"), list) else []
+    references = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or row.get("source_type") != "derived_amm_reference"
+            or row.get("sdr_evidence_id") not in sdr_ids
+            or not isinstance(row.get("cited_amm_ref_normalized"), str)
+        ):
+            continue
+        references.append(
+            {
+                "sdr_ref_id": row["sdr_evidence_id"],
+                "amm_ref": row["cited_amm_ref_normalized"],
+                "reference_level": row.get("reference_level"),
+                "context": str(row.get("quote") or "")[:500],
+                "evidence_id": row.get("evidence_id"),
+            }
+        )
+    return references[:MAX_REFERENCE_AMM]
 
 
 def ground_evidence(evidence: list, context: AgentContext) -> list:

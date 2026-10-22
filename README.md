@@ -10,7 +10,7 @@ backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두
 [backend] ──mro.agent.run (+x-mro-business-token, x-mro-rag-token)──▶ [이 레포: AI 서버 :8100]
     ▲                                                                     │  Authorization: Bearer
     └────────────── mro.agent.events (단계·최종 이벤트) ◀──────────────────┤──▶ [business-mcp :8101] B01~B03
-                                                                          └──▶ [rag-mcp      :8102] R01~R03·R05
+                                                                          └──▶ [rag-mcp      :8102] R01~R05, SDR→AMM 조회
 ```
 
 | 레포 | 역할 |
@@ -30,6 +30,7 @@ backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두
       ├─ 근거 확인됨 → 이력·접수·부서 재조회 후 바로 배정 제안
       └─ 근거 없음/미확인 → LLM2로
   → LLM2 조사 (AI가 RAG 도구를 직접 골라 호출) → LLM3 검토 → 필요하면 재조사(최대 2회)
+  → 배정이 확정되면 근거로 쓴 SDR에 인용된 AMM 번호를 조회해 결과에 `reference_amm`으로 첨부 (근거 아님)
   → 단계·최종 이벤트를 체크포인트에 저장 → 브로커 확인 → ACK
   → backend가 이벤트를 반영하고 근거·부서를 다시 검증해 배정 또는 사람 검토
 ```
@@ -48,6 +49,7 @@ backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두
 | 모델 입력 | 근거 원문과 핵심 필드만 전달. 이력은 인용분 + 최근 20건, 도구 응답은 본문 없이 상태·범위·ID만 (128K 한도 초과 방지) |
 | 출력 형식 | 모든 LLM 출력을 pydantic으로 검증. 실패하면 오류 내용을 알려주고 1회 다시 받음 |
 | 근거·범위 | 인용 근거가 실제로 조회됐는지, 발췌가 원문에 있는지, 부서 코드가 유효한지, 검색 범위·스냅샷이 바뀌지 않았는지 확인 |
+| AMM | 판단 근거로 쓰지 않음. LLM2·LLM3 도구 목록에서 AMM 도구(R03, SDR→AMM 조회)를 빼고, AMM 인용은 근거에서 제외. 배정 후 실행기가 근거 SDR의 AMM 번호를 조회해 `reference_amm`(SDR 근거 ID, AMM 번호, 인용 문장)으로 붙임. 조회가 실패하거나 도구가 없으면 첨부 없이 배정은 그대로 진행 |
 
 ## 실행
 
@@ -100,7 +102,7 @@ uv run --extra openai mro-worker run      # FastAPI :8100
 ## 테스트
 
 ```bash
-uv run --extra openai pytest        # 130개, 합성 도구·모델로 실행 (OpenAI·MCP 불필요)
+uv run --extra openai pytest        # 137개, 합성 도구·모델로 실행 (OpenAI·MCP 불필요)
 uv run --extra openai ruff check app tests
 ```
 

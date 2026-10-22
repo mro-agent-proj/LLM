@@ -78,12 +78,16 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
         )
     output = assessment.investigation
     # History LLM1 compared and rejected is not evidence, even if its id appears in a rationale.
+    # AMM is attached after assignment as a reference, never cited as evidence.
     admissible = [
         e
         for e in output.evidence
-        if e.source != "HISTORY"
-        or citable(
-            next((r for r in context.records if r.ref_id == e.ref_id), None) or e, state, cited
+        if e.source != "AMM"
+        and (
+            e.source != "HISTORY"
+            or citable(
+                next((r for r in context.records if r.ref_id == e.ref_id), None) or e, state, cited
+            )
         )
     ]
     if not admissible:
@@ -91,7 +95,7 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
             context,
             "INSUFFICIENT_EVIDENCE",
             "조사안에 조회한 근거가 없습니다.",
-            ["현재 증상과 같은 대상의 SDR·AMM 사례를 확보해야 합니다."],
+            ["현재 증상과 같은 대상의 SDR 사례를 확보해야 합니다."],
         )
     output = output.model_copy(update={"evidence": ground_evidence(admissible, context)})
     try:

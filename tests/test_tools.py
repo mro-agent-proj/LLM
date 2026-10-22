@@ -417,3 +417,21 @@ async def test_model_only_scope_still_rejects_operator_filter_and_other_models(r
     result = await runner.call("search_sdr_cases", {"query": "vibration"}, "기종 범위")
     assert result["error"]["code"] == "SCOPE_VIOLATION"
     assert not context.records
+
+
+def test_reference_amm_keeps_only_requested_sdr_rows():
+    from app.agent.tools import reference_amm
+
+    row = {
+        "source_type": "derived_amm_reference",
+        "sdr_evidence_id": "EV-SDR-1",
+        "cited_amm_ref_normalized": "32-42-27",
+        "reference_level": "subsection",
+        "quote": "REPLACED BRAKE PER AMM 32-42-27",
+        "evidence_id": "EV-AMM-1",
+    }
+    other = {**row, "sdr_evidence_id": "EV-SDR-9"}
+    ok = {"status": "OK", "request_id": "r", "items": [row, other]}
+    assert [r["amm_ref"] for r in reference_amm(ok, "r", {"EV-SDR-1"})] == ["32-42-27"]
+    assert reference_amm({**ok, "request_id": "someone-else"}, "r", {"EV-SDR-1"}) == []
+    assert reference_amm({"status": "ERROR"}, "r", {"EV-SDR-1"}) == []
