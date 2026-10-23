@@ -1,5 +1,7 @@
 # MRO AI 서버: LLM1 · LLM2 · LLM3
 
+현재 SDR 모델 범위 확장과 서비스 간 적용 순서는 [모델 검색 범위 계약](docs/MODEL_SCOPE.md)을 따른다.
+
 정비 요청을 받아 **증상 분류(LLM1) → 근거 조사(LLM2) → 검토(LLM3)** 를 거쳐 담당 정비 부서를 제안하는 AI 서버입니다.
 FastAPI가 서버 수명과 상태 확인을, LangGraph가 단계 흐름을, LangChain이 모델과 MCP 호출을 맡습니다.
 backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두 개로만 조회합니다. 실제 배정은 backend가 합니다.

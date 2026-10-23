@@ -127,6 +127,7 @@ class AgentContext(MaintenanceModel):
     classification_comparisons: list[dict[str, Any]] = Field(default_factory=list)
     review_comparisons: list[dict[str, Any]] = Field(default_factory=list)
     history_focus_ids: list[str] = Field(default_factory=list)
+    cross_model_reviews: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class InvestigationAssessment(MaintenanceModel):
@@ -139,18 +140,26 @@ class InvestigationAssessment(MaintenanceModel):
 
 
 class JudgmentComparison(MaintenanceModel):
-    status: Literal[
-        "NOT_AVAILABLE", "CONSISTENT", "RESOLVED_DIFFERENCE", "UNRESOLVED_DIFFERENCE"
-    ]
+    status: Literal["NOT_AVAILABLE", "CONSISTENT", "RESOLVED_DIFFERENCE", "UNRESOLVED_DIFFERENCE"]
     rationale: str
     evidence_refs: list[str] = Field(
         description="대조 결론을 뒷받침하는 조회 근거 ID. PASS 시 최종 인용 근거에 포함해야 한다"
     )
 
 
+class CrossModelReview(MaintenanceModel):
+    evidence_id: str
+    same_target: bool
+    same_phenomenon: bool
+    conditions_compatible: bool
+    configuration_assessment: Literal["SUPPORTED", "NOT_MATERIAL_FOR_DEPARTMENT", "UNRESOLVED"]
+    rationale: str = Field(min_length=1)
+
+
 class ReviewAssessment(MaintenanceModel):
     """Review's additional basis must survive final validation and handoff."""
 
+    cross_model_reviews: list[CrossModelReview] = Field(default_factory=list)
     review: Review
     comparison: JudgmentComparison
     additional_evidence: list[Evidence] = Field(

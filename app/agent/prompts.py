@@ -133,3 +133,30 @@ review는 decision/department/comments/supplement_request를 포함한다.
 공개 기술자료가 최종 결론의 핵심이면 technical_basis_ids에 기록한다.
 인용은 조회 결과의 ID와 300자 이내 연속된 원문을 쓴다. 기술자료의 출처를 바꾸지 않는다.
 """.strip()
+
+
+_MODEL_SCOPE_POLICY = """
+SDR 검색 범위는 request_context.resolved_scope.model_scope에 Backend가 고정한 허용 목록을 따른다.
+R02 첫 검색은 scope_level을 생략해 기본 MODEL_GENERATION(같은 기본 모델·ceo/neo 세대)을 사용한다.
+정확한 세부 모델 자료를 우선 비교한다. 기본 범위의 근거가 부족하거나 충돌할 때만
+이유를 question에 적고 scope_level=FAMILY로 같은 계열의 추가 사례를 찾는다.
+EXACT는 동일 세부 모델만 확인할 때 쓴다. 허용 목록이 없거나 EXACT뿐이면 확장하지 않는다.
+ATA/JASC는 순위 힌트이며 확정 원인이나 기종 적용성의 증명이 아니다.
+model_relation과 requested_model_key/model_key를 읽는다.
+다른 모델 사례를 같은 모델 이력처럼 설명하지 않는다.
+configuration_match=UNVERIFIED는 엔진·부품·장비 구성이 동일함을 확인하지 못했다는 뜻이다.
+같은 계열이라는 이유만으로 정비 절차·부품 호환성·운항 가능성을 추론하지 않는다.
+"""
+LLM2_SYSTEM += _MODEL_SCOPE_POLICY
+LLM3_SYSTEM += (
+    _MODEL_SCOPE_POLICY
+    + """
+최종 근거에 다른 모델의 SDR이 있으면 각 ID에 대해 cross_model_reviews를 반드시 작성한다.
+대상과 고장 현상, 발생 조건의 호환 여부를 원문으로 검토한다.
+configuration_assessment는 SUPPORTED(근거로 확인), NOT_MATERIAL_FOR_DEPARTMENT(부서 선정에
+해당 차이가 중요하지 않은 이유를 설명), UNRESOLVED(차이의 영향 미해결) 중 하나다.
+이 필드는 구성 동일성 인증이 아니다. 특히 엔진/장비 종류에 따라 달라지는 판단이라면
+자료 없는 동일성 추정으로 통과시키지 않는다. 미해결이면 SUPPLEMENT 또는 HUMAN을 택한다.
+다른 기종 근거를 사용한 경우 comments에도 실제 사례 모델과 비교 근거라는 사실을 명시한다.
+"""
+)

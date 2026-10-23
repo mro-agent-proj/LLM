@@ -96,17 +96,22 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
             validate_department(output.department, context)
         validate_evidence(additional, context)
         output = guard_review(assessment, state, context)
-        context.review_comparisons.append({
-            **assessment.comparison.model_dump(mode="json"),
-            "attempt": state["retry_count"],
-            "raw_decision": assessment.review.decision, "effective_decision": output.decision,
-        })
+        context.cross_model_reviews = [
+            c.model_dump(mode="json") for c in assessment.cross_model_reviews
+        ]
+        context.review_comparisons.append(
+            {
+                **assessment.comparison.model_dump(mode="json"),
+                "attempt": state["retry_count"],
+                "raw_decision": assessment.review.decision,
+                "effective_decision": output.decision,
+            }
+        )
         if output.decision == "PASS":
             validate_evidence(latest.evidence, context)
             context.final_evidence = list(
                 {
-                    (e.source, e.ref_id, e.excerpt): e
-                    for e in [*latest.evidence, *additional]
+                    (e.source, e.ref_id, e.excerpt): e for e in [*latest.evidence, *additional]
                 }.values()
             )
             context.final_validation = "PENDING"

@@ -15,6 +15,7 @@ from langchain_core.tools import BaseTool, ToolException
 from pydantic import ValidationError
 
 from app.agent.mcp_client import BUSINESS_TOOLS, RAG_TOOLS
+from app.agent.model_scope import allowed_models, default_level, relation, validate_policy
 from app.agent.schemas import AgentContext, GraphState, InternalHold, RetrievedRecord, ToolTrace
 from app.agent.settings import Settings
 from app.agent.transport import transient_error
@@ -151,6 +152,8 @@ class ToolGateway:
         forbidden = {
             "operator_code",
             "model_key",
+            "model_scope",
+            "search_level",
             "tenant_id",
             "role",
             "locked_filters",
@@ -162,6 +165,20 @@ class ToolGateway:
         if forbidden.intersection(supplied):
             raise ToolResultError("Scope and authorization are server-owned")
         args = dict(supplied)
+        if name == "search_sdr_cases" and self.context.applied_scope.get("model_scope"):
+            level = args.setdefault("scope_level", default_level(self.context.applied_scope))
+            try:
+                allowed_models(self.context.applied_scope, level)
+            except ValueError as exc:
+                raise ToolResultError(str(exc)) from exc
+            if level == "FAMILY" and not any(
+                t.tool == name
+                and t.response.get("status") in {"OK", "NO_MATCH", "NO_DATA"}
+                and t.arguments.get("scope_level", default_level(self.context.applied_scope))
+                != "FAMILY"
+                for t in self.context.traces
+            ):
+                raise ToolResultError("Search the default model scope before requesting FAMILY")
         for key, value in (
             ("request_id", self.state["request_id"]),
             ("context_version", self.context.context_version),
@@ -389,7 +406,7 @@ class ToolGateway:
         if status == "OK" and not singular and not value:
             raise ToolResultError("OK search must include records; use NO_DATA or NO_MATCH")
         if name in RAG_TOOLS:
-            self._scope(name, result)
+            self._scope(name, result, args)
         if status != "OK":
             return
         rows = [value] if singular else value
@@ -442,6 +459,10 @@ class ToolGateway:
                 "VALIDATION_FAILED",
                 "같은 컨텍스트 버전에서 검색 범위가 변경됐습니다.",
             )
+        try:
+            validate_policy(scope)
+        except ValueError as exc:
+            raise ToolResultError(str(exc)) from exc
         aircraft = value.get("aircraft") or {}
         if aircraft.get("registration") != self.state["tail_number"]:
             raise ScopeViolation(
@@ -467,7 +488,7 @@ class ToolGateway:
         elif value.get("missing_fields"):
             self._hold("NEEDS_INPUT", "접수 정보 보완이 필요합니다.", value["missing_fields"])
 
-    def _scope(self, name: str, result: dict) -> None:
+    def _scope(self, name: str, result: dict, args: dict | None = None) -> None:
         scope, snapshots = result.get("applied_scope"), result.get("snapshot_ids")
         if (
             not isinstance(scope, dict)
@@ -516,6 +537,18 @@ class ToolGateway:
                 raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "사용자 고정 조건이 변경됐습니다."
                 )
+        if not technical and name != "search_jasc_codes":
+            if scope.get("model_scope") != self.context.applied_scope.get("model_scope"):
+                raise ToolResultError("Backend model allowance changed")
+            level = scope.get("search_level") or "EXACT"
+            try:
+                allowed_models(self.context.applied_scope, level)
+            except ValueError as exc:
+                raise ToolResultError(str(exc)) from exc
+            if name == "search_sdr_cases" and level != (args or {}).get(
+                "scope_level", default_level(self.context.applied_scope)
+            ):
+                raise ToolResultError("R02 applied a different search level")
         family = "technical" if technical else "rag"
         pinned = self.context.snapshots.get(family)
         if pinned is not None and set(pinned) != set(snapshots):
@@ -572,7 +605,30 @@ class ToolGateway:
                 raise ScopeViolation(
                     "SCOPE_VIOLATION", "VALIDATION_FAILED", "다른 기체의 내부 이력입니다."
                 )
-        for key in ("operator_code", "model_key"):
+        if source in {"SDR", "AMM"}:
+            scope = envelope.get("applied_scope") or self.context.applied_scope
+            try:
+                models = allowed_models(
+                    self.context.applied_scope, scope.get("search_level") or "EXACT"
+                )
+            except ValueError as exc:
+                raise ToolResultError(str(exc)) from exc
+            if row.get("model_key") is not None and row["model_key"] not in models:
+                raise ScopeViolation(
+                    "SCOPE_VIOLATION",
+                    "VALIDATION_FAILED",
+                    "Evidence model is outside the applied search level",
+                )
+            if source == "SDR" and self.context.applied_scope.get("model_scope"):
+                if (
+                    row.get("model_key") not in models
+                    or row.get("requested_model_key") != self.context.applied_scope["model_key"]
+                    or row.get("model_relation")
+                    != relation(self.context.applied_scope, row["model_key"])
+                    or row.get("configuration_match") != "UNVERIFIED"
+                ):
+                    raise ToolResultError("Missing or inconsistent SDR model provenance")
+        for key in ("operator_code",):
             # A model-only scope (operator_code null) admits every operator of that model.
             if key == "operator_code" and self.context.applied_scope.get(key) is None:
                 continue
@@ -621,7 +677,15 @@ class ToolGateway:
         if name == "get_evidence" and (old is None or identifier != args.get("evidence_id")):
             raise ToolResultError("R05 returned an unexpected evidence_id")
         if old is not None:
-            for key in ("source_version", "source_id", "evidence_group_id"):
+            provenance_keys = ["source_version", "source_id", "evidence_group_id"]
+            if self.context.applied_scope.get("model_scope") and source in {"SDR", "AMM"}:
+                provenance_keys += [
+                    "model_key",
+                    "requested_model_key",
+                    "model_relation",
+                    "configuration_match",
+                ]
+            for key in provenance_keys:
                 if old.metadata.get(key) is not None and row.get(key) != old.metadata[key]:
                     raise ScopeViolation(
                         "EVIDENCE_CHANGED", "VALIDATION_FAILED", f"근거의 {key}가 변경됐습니다."
@@ -706,8 +770,10 @@ def ground_evidence(evidence: list, context: AgentContext) -> list:
         record = registry.get((item.source, item.ref_id))
         raw_spans = (record.metadata.get("quote_spans") or []) if record else []
         spans = [s.get("text", "") for s in raw_spans]
-        verbatim = record is not None and item.excerpt in record.content and (
-            not spans or any(item.excerpt in span for span in spans)
+        verbatim = (
+            record is not None
+            and item.excerpt in record.content
+            and (not spans or any(item.excerpt in span for span in spans))
         )
         if record is not None and not verbatim:
             source_text = next((s for s in spans if s.strip()), record.content).strip()

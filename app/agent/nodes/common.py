@@ -22,12 +22,33 @@ def json_context(value: Any) -> str:
 # prompt gets compact views. LLM1 reads every history page (often 80+ rows with retrieval
 # envelopes); resending all of it with every tool response overflowed the 128k context.
 RECORD_KEYS = (
-    "source_type", "title", "case_id", "operator_code", "model_key", "reported_jasc", "ata_chapter",
-    "jasc_code", "department_id", "evidence_group_id", "difficulty_date", "occurred_at",
-    "applicability_status", "relationship_status", "reference_level",
+    "source_type",
+    "title",
+    "case_id",
+    "operator_code",
+    "model_key",
+    "reported_jasc",
+    "ata_chapter",
+    "requested_model_key",
+    "model_relation",
+    "configuration_match",
+    "jasc_code",
+    "department_id",
+    "evidence_group_id",
+    "difficulty_date",
+    "occurred_at",
+    "applicability_status",
+    "relationship_status",
+    "reference_level",
 )
 RESPONSE_KEYS = (
-    "status", "counts", "warnings", "applied_scope", "snapshot_ids", "next_cursor", "error",
+    "status",
+    "counts",
+    "warnings",
+    "applied_scope",
+    "snapshot_ids",
+    "next_cursor",
+    "error",
     "context_version",
 )
 MAX_RECORD_TEXT = 1500
@@ -279,9 +300,11 @@ async def select_evidence(
                         "dropped": [c for c in args["candidate_jasc"] if c not in verified],
                     }
                 )
-            args = {**args, "candidate_jasc": kept} if kept else {
-                k: v for k, v in args.items() if k != "candidate_jasc"
-            }
+            args = (
+                {**args, "candidate_jasc": kept}
+                if kept
+                else {k: v for k, v in args.items() if k != "candidate_jasc"}
+            )
         identity = json.dumps([step.tool_name, args], sort_keys=True, ensure_ascii=False)
         if identity in seen_calls:
             # Counted like any call so a planner that keeps repeating itself still terminates.

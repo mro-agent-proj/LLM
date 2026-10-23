@@ -99,6 +99,7 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
         context.classification_comparisons = []
         context.review_comparisons = []
         context.history_focus_ids = []
+        context.cross_model_reviews = []
         context.hold = None
         context.prepared_payload = {}
         context.final_validation = "PENDING"
@@ -246,6 +247,25 @@ async def finalize_state(state: GraphState, runtime: AgentRuntime) -> dict:
                     "summary": f"{investigation.finding}\n{latest_review(state).comments}",
                     "evidence": [e.model_dump(mode="json") for e in evidence],
                 }
+                expanded = sorted(
+                    {
+                        record.metadata["model_key"]
+                        for record in context.records
+                        if record.source == "SDR"
+                        and any(e.ref_id == record.ref_id for e in evidence)
+                        and record.metadata.get("model_key")
+                        not in (None, context.applied_scope.get("model_key"))
+                    }
+                )
+                if expanded:
+                    payload["summary"] += (
+                        "\n[기종 확장 근거: "
+                        + ", ".join(expanded)
+                        + "; 요청 모델: "
+                        + str(context.applied_scope.get("model_key"))
+                        + ". 부서 배정 참고 사례이며 "
+                        "엔진·부품 구성 및 정비 적용성은 확인되지 않음.]"
+                    )
                 sdr_ids = sorted({e.ref_id for e in evidence if e.source == "SDR"})[:10]
                 if sdr_ids:
                     found = await gateway.reference(
