@@ -47,7 +47,9 @@ class MaintenanceService:
         self.timeout = timeout
         self.graph_factory = graph_factory
         self.timeout_is_remaining = timeout_is_remaining
-        self.workflow_key = "llm123-v1" if graph_factory is build_full_graph else "llm23-v1"
+        self.workflow_key = (
+            "llm123-isolated-v2" if graph_factory is build_full_graph else "llm23-isolated-v2"
+        )
 
     async def execute(
         self, run: RunRequest, runtime: AgentRuntime, publish: EventPublisher
@@ -106,7 +108,10 @@ class MaintenanceService:
             )
             logger.error(
                 "run %s failed with %s (%s) at %s",
-                run.request_id, code, type(exc).__name__, _where(exc),
+                run.request_id,
+                code,
+                type(exc).__name__,
+                _where(exc),
             )
             saved = await graph.aget_state(config)
             if _terminal(saved.values) is not None:

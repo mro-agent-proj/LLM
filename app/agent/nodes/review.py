@@ -74,7 +74,7 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
                 "evidence_records": model_records(context, state, "REVIEWING"),
                 "departments": context.departments,
                 "request_context": context.request_context,
-                "tool_traces": model_traces(context),
+                "tool_traces": model_traces(context, "REVIEWING"),
             }
         ),
     )

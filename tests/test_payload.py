@@ -54,7 +54,9 @@ def test_traces_keep_the_envelope_without_item_bodies():
             "items": [{"quote": "z" * 9000}],
         },
     )
-    [compact] = model_traces(AgentContext(request_id="r", traces=[trace]))
+    context = AgentContext(request_id="r", traces=[trace])
+    assert model_traces(context) == []
+    [compact] = model_traces(context, "REVIEWING")
     assert compact["response"] == {"status": "OK", "counts": {"returned_count": 100}}
     assert compact["item_ids"] == ["MH-000001"]
 
@@ -119,18 +121,22 @@ def _investigation_state(linked):
     }
 
 
-def test_history_tool_is_available_regardless_of_llm1_links():
+def test_history_tool_is_reviewer_only_regardless_of_llm1_links():
     from app.agent.nodes.common import hidden_tools
 
     # AMM tools are never offered: AMM is attached after assignment as a reference.
     amm = {"search_amm_references", "get_sdr_amm_references"}
     read = AgentContext(request_id="r", records=[history(1)])
     no_link = _investigation_state([])
-    assert hidden_tools(read, no_link, "INVESTIGATING") == amm
-    assert hidden_tools(read, _investigation_state(["MH-000001"]), "INVESTIGATING") == amm
+    assert hidden_tools(read, no_link, "INVESTIGATING") == amm | {"get_aircraft_history"}
+    assert hidden_tools(read, _investigation_state(["MH-000001"]), "INVESTIGATING") == amm | {
+        "get_aircraft_history"
+    }
     assert hidden_tools(read, _investigation_state([]), "REVIEWING") == amm
     unread = AgentContext(request_id="r")
-    assert hidden_tools(unread, _investigation_state([]), "INVESTIGATING") == amm
+    assert hidden_tools(unread, _investigation_state([]), "INVESTIGATING") == amm | {
+        "get_aircraft_history"
+    }
 
 
 async def test_hold_with_evidence_is_sent_back_once_then_accepted():
@@ -179,19 +185,20 @@ async def test_hold_with_evidence_is_sent_back_once_then_accepted():
 def test_llm1_links_do_not_change_llm2_history_selection():
     context = AgentContext(request_id="r", records=[history(i) for i in range(1, 30)])
     shown = model_records(context, _investigation_state([]))
-    assert len([r for r in shown if r["source"] == "HISTORY"]) == MAX_UNCITED_HISTORY
+    assert len([r for r in shown if r["source"] == "HISTORY"]) == 0
     linked = model_records(context, _investigation_state(["MH-000001"]))
     assert shown == linked
 
 
-def test_independently_selected_older_history_page_remains_visible():
+def test_older_history_page_is_visible_only_to_reviewer():
     records = [history(i) for i in range(1, 30)]
     records[0].metadata["occurred_at"] = "2001-01-01"
     context = AgentContext(request_id="r", records=records)
     state = _investigation_state([])
     assert "MH-000001" not in {r["ref_id"] for r in model_records(context, state)}
     context.history_focus_ids = ["MH-000001"]
-    assert "MH-000001" in {r["ref_id"] for r in model_records(context, state)}
+    assert model_records(context, state) == []
+    assert "MH-000001" in {r["ref_id"] for r in model_records(context, state, "REVIEWING")}
 
 
 async def test_finish_without_evidence_is_sent_back_twice_then_returned():
@@ -265,6 +272,6 @@ def test_citable_history_is_independent_of_llm1_links():
     row = history(1)
     rejected = _investigation_state([])
     linked = _investigation_state(["MH-000001"])
-    assert citable(row, rejected, set()) is True
-    assert citable(row, linked, {"MH-000001"}) is True
-    assert citable(row, {"classification": None, "investigations": []}, set()) is True
+    assert citable(row, rejected, set()) is False
+    assert citable(row, linked, {"MH-000001"}) is False
+    assert citable(row, {"classification": None, "investigations": []}, set()) is False

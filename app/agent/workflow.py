@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.nodes.common import hold_update
-from app.agent.nodes.investigate import run_investigate
+from app.agent.nodes.isolation import merge_for_review, run_isolated_investigation
 from app.agent.nodes.review import run_review
 from app.agent.runtime import AgentRuntime
-from app.agent.schemas import GraphState, Investigation, Review
+from app.agent.schemas import GraphState, Investigation, InvestigatorState, Review
 from app.agent.tools import (
     EvidenceValidationError,
     ToolGateway,
@@ -37,12 +37,8 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
     """Run a validated maintenance request through investigation and independent review."""
     graph = StateGraph(GraphState)
 
-    async def investigate_node(state: GraphState) -> dict:
-        update = await run_investigate(state, runtime)
-        if len(update.get("investigations", [])) > len(state["investigations"]):
-            output = update["investigations"][-1].model_dump(mode="json")
-            update.update(stage_event(state, "INVESTIGATING", output))
-        return update
+    async def investigate_node(state: InvestigatorState) -> dict:
+        return await run_isolated_investigation(state, runtime)
 
     async def review_node(state: GraphState) -> dict:
         update = await run_review(state, runtime)
@@ -105,6 +101,7 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
         context.final_validation = "PENDING"
         return {
             "classification": None,
+            "llm2_context": {},
             "investigations": [],
             "reviews": [],
             "agent_context": context.model_dump(mode="json"),
@@ -120,7 +117,8 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
             else "end"
         )
 
-    graph.add_node("investigate", investigate_node)
+    graph.add_node("investigate", investigate_node, input_schema=InvestigatorState)
+    graph.add_node("merge_for_review", merge_for_review)
     graph.add_node("investigation_started", lambda s: stage_event(s, "INVESTIGATING"))
     graph.add_node("review_started", lambda s: stage_event(s, "REVIEWING"))
     graph.add_node("review", review_node)
@@ -131,7 +129,8 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
     graph.add_node("completed", complete_node)
     graph.add_edge(START, "investigation_started")
     graph.add_edge("investigation_started", "investigate")
-    graph.add_edge("investigate", "review_started")
+    graph.add_edge("investigate", "merge_for_review")
+    graph.add_edge("merge_for_review", "review_started")
     graph.add_edge("review_started", "review")
     graph.add_conditional_edges(
         "review",

@@ -72,7 +72,7 @@ def cited_history(state: GraphState) -> set[str]:
 def model_records(
     context: AgentContext, state: GraphState, stage: str = "INVESTIGATING"
 ) -> list[dict]:
-    """Bounded raw evidence; only the reviewer gets LLM1's preferred rows as well."""
+    """Only LLM3 can receive any aircraft history, including its identifiers."""
     cited = cited_history(state)
     if stage == "REVIEWING":
         cited |= set((_plain(state.get("classification")) or {}).get("linked_history_ids") or [])
@@ -94,13 +94,13 @@ def model_records(
             **{k: r.metadata[k] for k in RECORD_KEYS if r.metadata.get(k) is not None},
         }
         for r in context.records
-        if r.source != "HISTORY" or r.ref_id in keep
+        if r.source != "HISTORY" or (stage == "REVIEWING" and r.ref_id in keep)
     ]
 
 
 def citable(record, state: GraphState, cited: set[str]) -> bool:
-    """Scope-validated HISTORY remains eligible regardless of LLM1's judgment."""
-    return record.source != "AMM"
+    """LLM2 cannot use aircraft history or AMM as investigation evidence."""
+    return record.source not in {"HISTORY", "AMM"}
 
 
 def usable_evidence(context: AgentContext, state: GraphState) -> bool:
@@ -115,10 +115,14 @@ REFERENCE_ONLY_TOOLS = {"search_amm_references", "get_sdr_amm_references"}
 
 def hidden_tools(context: AgentContext, state: GraphState, stage: str) -> set[str]:
     """Do not let LLM1's conclusion control LLM2's tool catalogue."""
-    return set(REFERENCE_ONLY_TOOLS)
+    return set(REFERENCE_ONLY_TOOLS) | (
+        {"get_aircraft_history"} if stage == "INVESTIGATING" else set()
+    )
 
 
 def omitted_history(context: AgentContext, state: GraphState, stage="INVESTIGATING") -> int:
+    if stage != "REVIEWING":
+        return 0
     shown = {r["ref_id"] for r in model_records(context, state, stage) if r["source"] == "HISTORY"}
     return sum(r.source == "HISTORY" and r.ref_id not in shown for r in context.records)
 
@@ -130,7 +134,7 @@ def summarize_response(response: dict) -> dict:
     return {k: response[k] for k in RESPONSE_KEYS if k in response}
 
 
-def model_traces(context: AgentContext) -> list[dict]:
+def model_traces(context: AgentContext, stage: str = "INVESTIGATING") -> list[dict]:
     return [
         {
             "tool": t.tool,
@@ -142,6 +146,7 @@ def model_traces(context: AgentContext) -> list[dict]:
             "response": summarize_response(t.response),
         }
         for t in context.traces
+        if stage == "REVIEWING" or t.tool != "get_aircraft_history"
     ]
 
 
@@ -156,13 +161,18 @@ def hold_update(
     return {"agent_context": context.model_dump(mode="json")}
 
 
-async def prepare(state: GraphState, runtime: AgentRuntime) -> tuple[AgentContext, ToolGateway]:
+async def prepare(
+    state: GraphState, runtime: AgentRuntime, *, stage: str = "REVIEWING"
+) -> tuple[AgentContext, ToolGateway]:
     context = get_context(state)
     context.prepared_payload = {}
     context.final_validation = "PENDING"
     context.final_evidence = []
     tools = await runtime.tools("business", "rag")
-    gateway = ToolGateway(tools, state, context, runtime.settings)
+    blocked = hidden_tools(context, state, stage)
+    gateway = ToolGateway(
+        [tool for tool in tools if tool.name not in blocked], state, context, runtime.settings
+    )
     # B01 is read when the run starts (LLM1) and right before the final decision. Between stages the
     # confirmed context (version, scope) carries over, and the backend rechecks the request when it
     # applies the result, so a per-stage re-read adds calls without new information.
@@ -220,10 +230,20 @@ async def select_evidence(
             "tools": [t for t in gateway.catalogue() if t["name"] not in hidden],
             "evidence_records": model_records(context, state, stage),
             "omitted_history_count": omitted_history(context, state, stage),
-            "evidence_groups": evidence_groups(context),
+            "evidence_groups": evidence_groups(
+                context.model_copy(
+                    update={
+                        "records": [
+                            r
+                            for r in context.records
+                            if stage == "REVIEWING" or r.source != "HISTORY"
+                        ]
+                    }
+                )
+            ),
             "request_context": context.request_context,
             "snapshots": context.snapshots,
-            "tool_traces": model_traces(context),
+            "tool_traces": model_traces(context, stage),
             "departments": context.departments,
             "observations": observations,
             "remaining_tool_calls": runtime.settings.max_tool_calls - gateway.calls,
@@ -274,7 +294,7 @@ async def select_evidence(
                 {
                     "tool": step.tool_name,
                     "error": "TOOL_NOT_OFFERED",
-                    "note": "이 도구는 판단 단계에서 제공하지 않는 참고자료 도구다.",
+                    "note": "이 도구는 현재 역할에서 호출할 수 없다. 제공된 도구 목록을 사용한다.",
                 }
             )
             continue
