@@ -14,6 +14,7 @@ from app.agent.tools import (
     ToolResultError,
     decode_result,
     evidence_groups,
+    validate_department,
     validate_evidence,
 )
 from tests.support import INPUTS, DemoTools, example_state
@@ -219,9 +220,13 @@ async def test_failed_department_refresh_clears_stale_directory():
     }
     runner, context = gateway(source)
     context.departments = [{"code": "HYD"}]
-    await runner.call("search_departments", {}, "현재 부서")
+    # A failed ranked query (planner, default limit) keeps the directory the run confirmed.
+    await runner.call("search_departments", {"query": "유압"}, "순위 조회")
+    assert context.departments == [{"code": "HYD"}]
+    # A failed full refresh (the executor's limit=20 read) must not keep stale codes.
+    await runner.call("search_departments", {"limit": 20}, "현재 부서")
     assert context.departments == []
-    assert len(source.calls) == 1
+    assert len(source.calls) == 2
 
 
 def test_id_source_and_original_quote_are_all_required():
@@ -435,3 +440,50 @@ def test_reference_amm_keeps_only_requested_sdr_rows():
     assert [r["amm_ref"] for r in reference_amm(ok, "r", {"EV-SDR-1"})] == ["32-42-27"]
     assert reference_amm({**ok, "request_id": "someone-else"}, "r", {"EV-SDR-1"}) == []
     assert reference_amm({"status": "ERROR"}, "r", {"EV-SDR-1"}) == []
+
+
+def department_rows(*codes):
+    return [
+        {
+            "department_id": code,
+            "name": code,
+            "responsibilities": [],
+            "ata_chapters": "29,32" if code == "HYD" else "70",
+            "supported_models": ["A320-214"],
+            "availability_status": "available",
+            "active": True,
+            "mock": True,
+        }
+        for code in codes
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ranked_department_query_never_drops_the_confirmed_directory():
+    source = DemoTools()
+    replies = iter(
+        [
+            (department_rows("ENG", "HYD"), 2, 2),  # executor: full directory
+            (department_rows("ENG"), 1, 2),  # planner: query='유압 누유', limit 5 -> ranked subset
+            (department_rows("ENG"), 1, 1),  # executor: full directory, HYD no longer eligible
+        ]
+    )
+
+    def reply(name, args, result):
+        rows, returned, eligible = next(replies)
+        result["items"] = rows
+        result["counts"] = {
+            "scope_count": eligible,
+            "eligible_count": eligible,
+            "returned_count": returned,
+        }
+        return result
+
+    source.on_call = reply
+    runner, context = gateway(source)
+    await runner.call("search_departments", {"limit": 20}, "전체 부서")
+    await runner.call("search_departments", {"query": "유압 누유"}, "순위 조회")
+    assert {d["code"] for d in context.departments} == {"ENG", "HYD"}
+    validate_department("HYD", context)  # used to raise: the ranked subset overwrote the directory
+    await runner.call("search_departments", {"limit": 20}, "전체 부서 재확인")
+    assert [d["code"] for d in context.departments] == ["ENG"]
