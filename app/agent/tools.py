@@ -32,6 +32,8 @@ SEARCH_SOURCES = {
     "search_technical_docs": {"TECHNICAL_DOC"},
 }
 TERMINAL = {"ASSIGNED", "ACCEPTED", "HUMAN_REVIEW", "CLOSED"}
+# The executor reads the whole department directory with this limit; smaller = ranked subsets.
+FULL_DEPARTMENT_LIMIT = 20
 
 
 class EvidenceValidationError(ValueError):
@@ -253,7 +255,8 @@ class ToolGateway:
             result = _failure("TOOL_NOT_AVAILABLE", name)
             self._trace(name, supplied, question, result, 0, started_at)
             return result
-        if name == "search_departments":
+        if name == "search_departments" and supplied.get("limit", 5) >= FULL_DEPARTMENT_LIMIT:
+            # A full directory refresh replaces the list; a failed one must not keep stale codes.
             self.context.departments = []
         try:
             args = self.scoped_arguments(name, supplied)
@@ -390,9 +393,17 @@ class ToolGateway:
         if any(not isinstance(row, dict) for row in rows):
             raise ToolResultError("Expected result objects")
         if name == "search_departments":
-            self.context.departments = [
-                self._department(row) for row in rows if self._eligible_department(row)
-            ]
+            fresh = [self._department(row) for row in rows if self._eligible_department(row)]
+            counts = result.get("counts") or {}
+            returned = counts.get("returned_count")
+            if returned is not None and returned == counts.get("eligible_count"):
+                self.context.departments = fresh
+            else:
+                # A ranked subset (planner query, default limit 5) adds or refreshes codes but
+                # never drops the eligible directory the run already confirmed.
+                merged = {d["code"]: d for d in self.context.departments}
+                merged.update({d["code"]: d for d in fresh})
+                self.context.departments = list(merged.values())
         elif name == "search_jasc_codes":
             by_code = {row["code"]: row for row in self.context.jasc_candidates}
             for row in rows:
