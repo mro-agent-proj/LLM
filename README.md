@@ -28,7 +28,7 @@ backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두
 실행 요청 수신 (RabbitMQ, prefetch=1)
   → LLM1 분류 (business-mcp B01·B02·B03)
       1단계: 증상 문장만 보고 ATA 후보 1~3개 선택 (이력을 보기 전)
-      2단계: 그 ATA의 같은 기체 이력만 비교. 연결 이력마다 "증상과 이력 문장에 둘 다 있는 대상 표현"을 적게 하고 코드가 확인
+      2단계: 후보 ATA의 같은 기체 이력을 맥락으로 비교. 현재·과거 원문 인용과 담당 ATA를 코드가 검증
       ├─ 근거 확인됨 → 이력·접수·부서 재조회 후 바로 배정 제안
       └─ 근거 없음/미확인 → LLM2로
   → LLM2 조사 (AI가 RAG 도구를 직접 골라 호출) → LLM3 검토 → 필요하면 재조사(최대 2회)
@@ -49,15 +49,14 @@ backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두
 | LLM3 | LLM1·2 판단과 원문을 대조. 미해결 충돌·담당 ATA 불일치는 재조사, 근거로 해소한 차이는 통과 가능 |
 | LLM2 | 근거와 부서 후보가 있는데 멈추려 하면 한 번 되돌려 보냄. 도구 예산이 끝나도 근거가 있으면 결론 작성 |
 | 도구 예산 | 고정 확인 호출(B01·B03)은 제외하고, AI가 고른 호출만 단계당 `MAX_TOOL_CALLS`회 |
-| 모델 입력 | 근거 원문과 핵심 필드만 전달. 이력은 인용분 + 최근 20건, 도구 응답은 본문 없이 상태·범위·ID만 (128K 한도 초과 방지) |
+| 모델 입력 | LLM2는 자체 RAG 자료만 사용. LLM3의 이력 입력은 인용분·추가 조회분과 최근 이력 일부로 제한. 도구 기록은 상태·범위·ID로 요약 |
 | 출력 형식 | 모든 LLM 출력을 pydantic으로 검증. 실패하면 오류 내용을 알려주고 1회 다시 받음. 비어 있는 `NextStep.question`은 행동별 기본 문구로 채움(빈 값 두 번으로 실행이 실패하던 간헐 오류의 원인) |
-| 접수 확인 (B01) | 실행 시작(LLM1)과 최종 확정 직전에만 호출. 단계 사이에는 확인한 범위·버전을 이어 씀 (실행당 4~6회 → 2회) |
-
-맥락 비교의 내부 필드, 독립 조사 경계, 검증 한계는
-[판단 분리 설계](docs/contextual-handoff.md)를 참고합니다.
+| 접수 확인 (B01) | LLM1 시작과 최종 확정에 호출하며, 격리된 LLM2도 자체 컨텍스트를 처음 구성할 때 호출. 단계 합류 시 범위·버전·스냅샷 비교 |
 | 실패 로그 | 실행 실패 시 서버 로그에 예외 종류와 코드 위치, 스키마 검증 실패 필드·종류만 남김(모델 응답·키·URL은 남기지 않음) |
 | 근거·범위 | 인용 근거가 실제로 조회됐는지, 발췌가 원문에 있는지, 부서 코드가 유효한지, 검색 범위·스냅샷이 바뀌지 않았는지 확인 |
 | AMM | 판단 근거로 쓰지 않음. LLM2·LLM3 도구 목록에서 AMM 도구(R03, SDR→AMM 조회)를 빼고, AMM 인용은 근거에서 제외. 배정 후 실행기가 근거 SDR의 AMM 번호를 조회해 `reference_amm`(SDR 근거 ID, AMM 번호, 인용 문장)으로 붙임. 조회가 실패하거나 도구가 없으면 첨부 없이 배정은 그대로 진행 |
+
+맥락 비교의 내부 필드, 독립 조사 경계, 검증 한계는 [판단 분리 설계](docs/contextual-handoff.md)를 참고합니다.
 
 ## 실행
 
@@ -71,7 +70,7 @@ docker compose up -d --build
 curl http://127.0.0.1:8100/health/ready   # {"status":"ready",...}
 ```
 
-Compose는 MCP 주소를 `http://business-mcp:8101/mcp`, `http://rag-mcp:8102/mcp`로 지정하고 backend 네트워크(`BACKEND_NETWORK`, 기본 `backend_default`)에 붙습니다. 모델 키는 AI 서버에만 둡니다. `ai-state` 볼륨(체크포인트)을 `down -v`로 지우지 않습니다.
+Compose는 MCP 주소를 `http://business-mcp:8101/mcp`, `http://rag-mcp:8102/mcp`로 지정하고 backend 네트워크(`BACKEND_NETWORK`, 기본 `backend_default`)에 붙습니다. LLM 호출 키는 AI 서버에 둡니다. RAG 질의 임베딩 키 `RAG_OPENAI_API_KEY`는 별도로 MCP 환경에 설정합니다. `ai-state` 볼륨(체크포인트)을 `down -v`로 지우지 않습니다.
 
 ### 로컬
 
@@ -99,6 +98,12 @@ uv run --extra openai mro-worker run      # FastAPI :8100
 | `RUN_TIMEOUT_SECONDS` | `280` | 그래프 실행 한도 (backend 큐 TTL 5분 안) |
 | `STATE_DIR` / `RUN_JOURNAL_PATH` / `CHECKPOINT_DATABASE_URL` | `.state` / … / (비움) | 체크포인트 위치. 비우면 로컬 SQLite |
 
+## 버전 교체
+
+신규 접수를 멈추고 진행 중 실행·이벤트 처리를 완료한 후 AI 이미지를 재빌드합니다. workflow key는 `llm123-isolated-v2` / `llm23-isolated-v2`이며 이전 key의 체크포인트는 자동 재개하지 않습니다. 기존 DB·큐·AI 상태 볼륨은 보존합니다. 미완료 구버전 요청은 담당자가 기존 처리 결과를 확인한 뒤 복구 절차를 결정해야 합니다.
+
+LLM2에는 LLM3 자유문장 피드백을 그대로 전달하지 않습니다. 재조사는 자신의 RAG 자료와 고정된 독립 재검토 지시를 사용하며, 구체적 피드백 계약은 후속 과제입니다.
+
 ## RabbitMQ와 복구
 
 - backend가 선언한 exchange `mro.agent`, queue `mro.agent.run`을 확인만 하고 새로 선언하지 않습니다.
@@ -110,11 +115,17 @@ uv run --extra openai mro-worker run      # FastAPI :8100
 ## 테스트
 
 ```bash
-uv run --extra openai pytest        # 139개, 합성 도구·모델로 실행 (OpenAI·MCP 불필요)
+uv run --extra openai pytest        # 합성 도구·모델로 실행 (OpenAI·MCP 불필요)
 uv run --extra openai ruff check app tests
 ```
 
-## 검증 상태 (2026-10-21, 실제 스택)
+## 검증 상태 (2026-10-23)
+
+상태 격리 적용 버전으로 Backend → RabbitMQ → AI(gpt-5.4-mini) → HTTP MCP → Docker DB의 서비스 평가 200건을 완료했습니다. 단위·회귀 테스트는 173건 통과했습니다. 실제 실행 감사에서는 LLM2 HISTORY 기록·B02 호출이 모두 0건이었습니다.
+
+팀 라벨 기준 전체 통과 97/200, LLM2 마지막 부서 일치 71/82입니다. 정답 부서를 예측하고 보류한 42건은 별도 검토 대상이며 성공에 합산하지 않습니다. 미검토 라벨 161건이 있어 실제 운영 안전성이나 개선 전후 성능으로 일반화하지 않습니다.
+
+### 과거 실행 기록 (2026-10-21; 현재 버전 성능 아님)
 
 backend·MCP·OpenAI를 모두 붙여 backend `data/eval/scenario/scenarios.md`의 S01~S23을 실제로 돌렸습니다(`gpt-5.4-mini`).
 
