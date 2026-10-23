@@ -9,10 +9,10 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agent.nodes.classify import business_gateway, run_classify, validate_classification
 from app.agent.nodes.common import hold_update
-from app.agent.nodes.investigate import run_investigate
+from app.agent.nodes.isolation import merge_for_review, run_isolated_investigation
 from app.agent.nodes.review import run_review
 from app.agent.runtime import AgentRuntime
-from app.agent.schemas import Classification, GraphState
+from app.agent.schemas import Classification, GraphState, InvestigatorState
 from app.agent.tools import EvidenceValidationError, get_context, validate_evidence
 from app.agent.workflow import finalize_state, human_payload, latest_review
 from app.messages import event, stage_event
@@ -139,6 +139,19 @@ def build_full_graph(
             )
         return "finalize"
 
+    async def investigate_node(state: InvestigatorState):
+        if on_stage:
+            await on_stage("STAGE_STARTED", "INVESTIGATING", state["retry_count"] + 1, None)
+        update = await run_isolated_investigation(state, runtime)
+        if on_stage and update.get("investigations"):
+            await on_stage(
+                "STAGE_RESULT",
+                "INVESTIGATING",
+                state["retry_count"] + 1,
+                update["investigations"][-1].model_dump(mode="json"),
+            )
+        return update
+
     async def direct(state):
         return await finalize_classification(state, runtime)
 
@@ -163,7 +176,8 @@ def build_full_graph(
     graph.add_node("investigation_started", lambda s: stage_event(s, "INVESTIGATING"))
     graph.add_node("review_started", lambda s: stage_event(s, "REVIEWING"))
     graph.add_node("classify", observed(run_classify, "CLASSIFYING", "classification"))
-    graph.add_node("investigate", observed(run_investigate, "INVESTIGATING", "investigations"))
+    graph.add_node("investigate", investigate_node, input_schema=InvestigatorState)
+    graph.add_node("merge_for_review", merge_for_review)
     graph.add_node("review", observed(run_review, "REVIEWING", "reviews"))
     graph.add_node("direct", direct)
     graph.add_node("finalize", final)
@@ -179,7 +193,8 @@ def build_full_graph(
         {"hold": "hold", "direct": "direct", "investigate": "investigation_started"},
     )
     graph.add_edge("investigation_started", "investigate")
-    graph.add_edge("investigate", "review_started")
+    graph.add_edge("investigate", "merge_for_review")
+    graph.add_edge("merge_for_review", "review_started")
     graph.add_edge("review_started", "review")
     graph.add_conditional_edges(
         "review",

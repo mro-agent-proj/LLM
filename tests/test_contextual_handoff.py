@@ -131,7 +131,7 @@ async def test_llm2_never_receives_llm1_judgment_but_llm3_does():
     assert state["agent_context"]["review_comparisons"][0]["status"] == "CONSISTENT"
 
 
-async def test_llm2_can_use_history_even_when_llm1_linked_nothing():
+async def test_llm2_cannot_call_history_even_when_model_requests_it():
     from app.agent.schemas import InvestigationAssessment, NextStep
     from tests.support import ScriptedDemoModel
 
@@ -166,8 +166,10 @@ async def test_llm2_can_use_history_even_when_llm1_linked_nothing():
         proposed_department="STR",
         rationale="LLM1_ONLY_MARKER",
     )
-    result = await run_investigate(state, AgentRuntime(HistoryModel(), BusinessTools()))
-    assert result["investigations"][-1].evidence[0].ref_id == "MH-000123"
+    tools = BusinessTools()
+    result = await run_investigate(state, AgentRuntime(HistoryModel(), tools))
+    assert result["agent_context"]["hold"] is not None
+    assert not any(t["tool"] == "get_aircraft_history" for t in result["agent_context"]["traces"])
 
 
 def review_case(status, classification=True):
@@ -257,3 +259,18 @@ async def test_current_b03_scope_is_checked_again_before_direct_assignment():
     tools.departments[0]["ata_chapters"] = "29"
     result = await finalize_classification(state, runtime)
     assert result["agent_context"]["prepared_payload"]["review_reason"] == "VALIDATION_FAILED"
+
+
+async def test_b02_unavailable_to_investigator_gateway_but_available_to_reviewer():
+    from app.agent.nodes.common import prepare
+
+    runtime = AgentRuntime(FullModel(False), BusinessTools())
+    for stage, allowed in [("INVESTIGATING", False), ("REVIEWING", True)]:
+        context, gateway = await prepare(example_state(), runtime, stage=stage)
+        assert ("get_aircraft_history" in {t["name"] for t in gateway.catalogue()}) is allowed
+        result = await gateway.call("get_aircraft_history", {}, "역할별 B02 권한 검사")
+        if allowed:
+            assert result["status"] == "OK"
+        else:
+            assert result["error"]["code"] == "TOOL_NOT_AVAILABLE"
+            assert context.traces[-1].attempts == 0

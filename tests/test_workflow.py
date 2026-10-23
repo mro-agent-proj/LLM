@@ -386,22 +386,9 @@ async def test_repeated_context_changes_stop_after_one_context_refresh():
 async def test_history_decision_is_revalidated_through_b02_not_r05():
     class HistoryModel(ScriptedDemoModel):
         async def complete(self, schema, system, context):
-            data = json.loads(context)
-            if (
-                schema is NextStep
-                and data["stage"] == "INVESTIGATING"
-                and not data["evidence_records"]
-            ):
-                return NextStep(
-                    action="CALL",
-                    question="현재 기체의 이력을 더 확인할 수 있는가?",
-                    tool_name="get_aircraft_history",
-                    arguments_json="{}",
-                    hold_reason=None,
-                )
             result = await super().complete(schema, system, context)
-            if schema is InvestigationAssessment:
-                result.investigation.evidence = [
+            if schema is ReviewAssessment:
+                result.additional_evidence = [
                     Evidence(
                         source="HISTORY",
                         ref_id="MH-000123",
@@ -413,10 +400,24 @@ async def test_history_decision_is_revalidated_through_b02_not_r05():
 
     tools = DemoTools()
     runtime = AgentRuntime(model=HistoryModel(), tools=tools)
-    state = await build_graph(runtime).ainvoke(example_state())
-    assert (await completion_payload(state, runtime))["evidence"][0]["ref_id"] == "MH-000123"
+    # HISTORY was retrieved by LLM1 before entering the investigation graph.
+    from app.agent.nodes.common import prepare
+
+    initial = example_state()
+    context, gateway = await prepare(initial, runtime)
+    await gateway.call("get_aircraft_history", {}, "LLM1에서 확보한 원자료")
+    initial["agent_context"] = context.model_dump(mode="json")
+    state = await build_graph(runtime).ainvoke(initial)
+    assert "MH-000123" in {
+        e["ref_id"] for e in (await completion_payload(state, runtime))["evidence"]
+    }
+    assert all(e.source != "HISTORY" for e in state["investigations"][-1].evidence)
     assert sum(n == "get_aircraft_history" for n, _ in tools.calls) == 2
-    assert not any(n == "get_evidence" for n, _ in tools.calls)
+    assert all(
+        args.get("evidence_id") != "MH-000123"
+        for name, args in tools.calls
+        if name == "get_evidence"
+    )
 
 
 @pytest.mark.asyncio
@@ -433,7 +434,6 @@ async def test_amm_reference_failure_never_blocks_assignment():
     payload = await completion_payload(state, runtime)
     assert payload["outcome"] == "ASSIGN" and "reference_amm" not in payload
     assert state["agent_context"]["traces"][-1]["outcome"] == "ERROR"
-
 
 
 @pytest.mark.asyncio

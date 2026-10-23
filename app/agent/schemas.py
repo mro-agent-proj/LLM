@@ -170,6 +170,19 @@ class ReviewAssessment(MaintenanceModel):
     )
 
 
+class InvestigatorState(TypedDict):
+    """LangGraph input channels for LLM2: no LLM1/reviewer context or events."""
+
+    request_id: str
+    tail_number: str
+    aircraft_model: str
+    airline_code: str
+    symptom_text: str
+    investigations: list[Investigation]
+    retry_count: int
+    llm2_context: NotRequired[dict[str, Any]]
+
+
 class GraphState(TypedDict):
     request_id: str
     tail_number: str
@@ -182,6 +195,7 @@ class GraphState(TypedDict):
     retry_count: int
     # Private AI data; never included in Classification/Investigation/Review callbacks.
     agent_context: NotRequired[dict[str, Any]]
+    llm2_context: NotRequired[dict[str, Any]]
     stage_events: NotRequired[list[dict[str, Any]]]
 
 

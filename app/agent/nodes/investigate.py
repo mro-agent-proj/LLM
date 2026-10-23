@@ -20,7 +20,7 @@ from app.agent.tools import (
 
 
 async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
-    context, gateway = await prepare(state, runtime)
+    context, gateway = await prepare(state, runtime, stage="INVESTIGATING")
     if context.hold is not None:
         return {"agent_context": context.model_dump(mode="json")}
     if not context.departments:
@@ -79,19 +79,11 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
             assessment.technical_basis_ids,
         )
     output = assessment.investigation
-    # LLM2 may independently cite any scope-validated history, including one LLM1 did not link.
+    # Reject HISTORY even if a model invents/guesses a valid MH identifier.
+    if any(e.source == "HISTORY" for e in output.evidence):
+        return hold_update(context, "VALIDATION_FAILED", "LLM2 cannot cite aircraft history.")
     # AMM is attached after assignment as a reference, never cited as evidence.
-    admissible = [
-        e
-        for e in output.evidence
-        if e.source != "AMM"
-        and (
-            e.source != "HISTORY"
-            or citable(
-                next((r for r in context.records if r.ref_id == e.ref_id), None) or e, state, cited
-            )
-        )
-    ]
+    admissible = [e for e in output.evidence if e.source != "AMM"]
     if not admissible:
         return hold_update(
             context,
