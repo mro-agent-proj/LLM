@@ -1,5 +1,7 @@
 # MRO LLM2·3 — 조사·검토와 근거 검증
 
+> 통합 이전 LLM2·3 패키지의 원본 문서 보존본입니다. 아래 역할·모델·실행 명령·평가 상태는 현재 AI 서버 기준이 아닙니다. 현재 실행과 평가 안내는 [저장소 README](../../README.md)와 [분류 기준](../classification-criteria.md)을 따릅니다.
+
 팀 인터페이스 PDF 본문 v0.3을 우선하고, 읽기 도구의 상세 입력·반환은 Google MCP v1.0 및 팀 RAG 구현을 따른다.
 외부 Investigation / Review / Evidence 모델은 유지한다. 실제 배정과 요청 상태 변경은 Spring 책임이다.
 
