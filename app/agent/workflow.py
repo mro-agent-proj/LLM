@@ -17,6 +17,7 @@ from app.agent.tools import (
     get_context,
     reference_amm,
     validate_department,
+    validate_department_ata,
     validate_evidence,
 )
 from app.messages import event, stage_event
@@ -95,6 +96,9 @@ def build_graph(runtime: AgentRuntime, checkpointer=None):
         context.request_context = {}
         context.applied_scope = {}
         context.snapshots = {}
+        context.classification_comparisons = []
+        context.review_comparisons = []
+        context.history_focus_ids = []
         context.hold = None
         context.prepared_payload = {}
         context.final_validation = "PENDING"
@@ -190,6 +194,9 @@ async def finalize_state(state: GraphState, runtime: AgentRuntime) -> dict:
                 if context.hold is not None:
                     raise EvidenceValidationError(context.hold.summary)
                 validate_department(latest_review(state).department, context)
+                validate_department_ata(
+                    latest_review(state).department, investigation.ata_chapter, context
+                )
                 validate_evidence(evidence, context)
                 checked = set()
                 for item in evidence:

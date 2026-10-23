@@ -240,6 +240,9 @@ class ToolGateway:
     def _invalidate(self, reason: str, message: str) -> None:
         self.context.records.clear()
         self.context.final_evidence.clear()
+        self.context.classification_comparisons.clear()
+        self.context.review_comparisons.clear()
+        self.context.history_focus_ids.clear()
         self.context.departments.clear()
         self.context.jasc_candidates.clear()
         self.context.cursors.clear()
@@ -727,6 +730,23 @@ def validate_evidence(evidence: list, context: AgentContext) -> None:
 def validate_department(code: str, context: AgentContext) -> None:
     if code not in {d.get("code") for d in context.departments}:
         raise EvidenceValidationError("Department is not an eligible current department code")
+
+
+def validate_department_ata(code: str, ata: str, context: AgentContext) -> None:
+    """Check the current B03 responsibility, including its public 'ATA NN' representation."""
+    validate_department(code, context)
+    department = next(d for d in context.departments if d.get("code") == code)
+    raw = department.get("ata_chapters") or []
+    values = raw.split(",") if isinstance(raw, str) else raw
+    chapters = {str(v).strip() for v in values if re.fullmatch(r"[0-9]{2}", str(v).strip())}
+    for responsibility in department.get("responsibilities") or []:
+        match = re.fullmatch(r"ATA\s+([0-9]{2})", str(responsibility).strip(), re.IGNORECASE)
+        if match:
+            chapters.add(match.group(1))
+    if ata not in chapters:
+        raise EvidenceValidationError(
+            f"현재 B03에서 {code}의 ATA {ata} 담당 범위를 확인하지 못했습니다."
+        )
 
 
 def evidence_groups(context: AgentContext) -> dict[str, list[str]]:

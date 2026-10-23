@@ -58,9 +58,11 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
                         "symptom_text",
                     )
                 },
-                "classification": state["classification"],
                 "previous_investigations": state["investigations"],
-                "previous_reviews": state["reviews"],
+                "supplement_requests": [
+                    (r.model_dump() if hasattr(r, "model_dump") else r).get("supplement_request")
+                    for r in state["reviews"]
+                ],
                 "evidence_records": model_records(context, state),
                 "departments": context.departments,
                 "request_context": context.request_context,
@@ -77,7 +79,7 @@ async def run_investigate(state: GraphState, runtime: AgentRuntime) -> dict:
             assessment.technical_basis_ids,
         )
     output = assessment.investigation
-    # History LLM1 compared and rejected is not evidence, even if its id appears in a rationale.
+    # LLM2 may independently cite any scope-validated history, including one LLM1 did not link.
     # AMM is attached after assignment as a reference, never cited as evidence.
     admissible = [
         e

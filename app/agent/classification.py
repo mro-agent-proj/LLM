@@ -1,6 +1,6 @@
 """Private LLM1 output wrapper; the public Classification contract stays unchanged."""
 
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -8,23 +8,33 @@ from app.agent.schemas import Classification, ContractModel
 
 
 class LinkEvidence(BaseModel):
-    """Why one linked history row is the same target as the current symptom (checked by code).
+    """Model's semantic assessment; source quotes are independently checked by the runner.
 
-    Deliberately lenient (no strict/blank checks): a malformed reason must only drop that link in
-    supported_links, never fail the whole run.
+    A relation label is a model judgment, not proof of semantic correctness.
+    Empty quotes are handled by dropping a link rather than stopping the request.
     """
 
     model_config = ConfigDict(extra="forbid")
     history_id: str
-    shared_target: str = Field(
-        description="현재 증상 문장과 이력 문장에 둘 다 그대로 들어 있는 대상 부품·계통·경고 표현"
-    )
+    current_excerpt: str = Field(description="현재 신고의 대상·현상·부정 여부가 드러나는 원문 인용")
+    history_excerpt: str = Field(description="과거 symptom 원문 인용. 조치·결과 문장으로 대체 금지")
+    current_target: str
+    history_target: str
+    current_phenomenon: str
+    history_phenomenon: str
+    target_relation: Literal["SAME", "RELATED", "DIFFERENT", "UNKNOWN"]
+    phenomenon_relation: Literal["SAME", "RELATED", "DIFFERENT", "UNKNOWN"]
+    current_assertion: Literal["PRESENT", "ABSENT", "UNCERTAIN"]
+    history_assertion: Literal["PRESENT", "ABSENT", "UNCERTAIN"]
+    material_conflicts: list[str] = Field(description="이력 연결을 반박하는 차이. 없으면 []")
+    uncertainties: list[str] = Field(description="조건 누락 등 확인하지 못한 사항. 없으면 []")
+    rationale: str = Field(description="대상·현상·부서 연결 설명. 공통 단어만으로 연결하지 않는다")
 
 
 class ClassificationDecision(ContractModel):
     classification: Classification | None
     missing_information: str | None
-    link_evidence: list[LinkEvidence]
+    link_evidence: list[LinkEvidence] = Field(max_length=20)
 
     @model_validator(mode="after")
     def one_result(self) -> Self:
@@ -84,11 +94,20 @@ ata_chapter는 이 후보 중 하나로 정한다. 이력에 맞추려고 증상
   부서 목록과 책임 범위는 입력을 따른다. 고정된 부서 목록을 가정하지 않는다.
 - ata_chapter는 2자리 분류 가설이다. 근거가 부족해 분류 자체를 할 수 없으면
   ATA나 이력을 만들어 내지 말고 classification=null, missing_information에 사유를 쓴다.
-- linked_history_ids의 각 이력마다 link_evidence를 하나씩 쓴다. shared_target에는 현재 증상 문장과
-  그 이력 문장에 둘 다 글자 그대로 들어 있는 대상 표현(부품·계통·경고 메시지,
-  예: "FLAP SYS 1 FAULT", "APU 시동", "손전등")을 쓴다.
-  발생 단계·위치·"신고"·"이상" 같은 일반 표현은 대상이 아니다.
-  그런 공통 대상 표현이 없는 이력은 연결하지 않는다. 실행기가 두 문장에 실제로 있는지 확인한다.
+- 관련성이 높은 소수의 이력에 대해 link_evidence에 현재와 과거의 대상·현상을 각각 적는다.
+  비교 출력은 최대 20건이며 불필요하게 모든 이력을 길게 설명하지 않는다.
+  current_excerpt는 현재 신고, history_excerpt는 과거 symptom에서 연속된 원문을 인용한다.
+  부정·조건을 잘라 의미를 바꾸지 않는다. 두 인용이 같은 단어를 포함할 필요는 없다.
+  한영 표현·동의어·약어 차이는 문맥으로 SAME/RELATED 여부를 설명한다.
+  target_relation과 phenomenon_relation을 별도로 평가한다. 착륙장치 접힘 불가와
+  브레이크 과열처럼 같은 ATA라도 대상·현상이 다르면 DIFFERENT다.
+  '브레이크 정상/이상 없음'은 ABSENT이며 브레이크 결함 이력과 연결하지 않는다.
+  조치에서 '브레이크 점검 정상'이 나왔다고 과거 신고가 브레이크 결함이었다고 해석하지 않는다.
+  발생 단계·장소·점검·inspection 같은 일반 표현만으로 관련성을 인정하지 않는다.
+  PRESENT는 해당 대상의 결함 현상이 실제로 보고됐다는 뜻이며 UNKNOWN을 추정으로 채우지 않는다.
+  연결을 반박하는 차이는 material_conflicts, 단순 누락·미확인 조건은 uncertainties에 쓴다.
+  linked_history_ids에는 두 관계가 SAME/RELATED이고 양쪽 현상이 PRESENT이며
+  material_conflicts가 없는 이력만 넣는다. 다른 이력은 비교 결과에 남겨도 연결하지 않는다.
 - 판단 가능하면 classification에 팀 Classification 5개 필드를 넣고 missing_information=null.
   rationale에는 현재 증상, 연결 이력, 부서 관계, 차이와 미확인 사항을 설명한다.
 """.strip()

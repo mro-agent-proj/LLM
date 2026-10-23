@@ -224,17 +224,17 @@ async def test_classification_sees_only_candidate_ata_history():
 
 
 @pytest.mark.parametrize(
-    "triage, changes, shared_target",
+    "triage, changes, link_changes",
     [
-        (["32"], {"linked_history_ids": []}, "휠 진동"),  # sufficient without any link
-        (["52"], {"ata_chapter": "32"}, "휠 진동"),  # ATA outside the symptom candidates
-        (["32", "52"], {"linked_history_ids": ["MH-000200"]}, "휠 진동"),  # 52 row under ATA 32
-        (["32"], {}, "착륙 후"),  # only a phase word in common
-        (["32"], {}, "브레이크"),  # target not present in both texts
+        (["32"], {"linked_history_ids": []}, {}),
+        (["52"], {"ata_chapter": "32"}, {}),
+        (["32", "52"], {"linked_history_ids": ["MH-000200"]}, {}),
+        (["32"], {}, {"target_relation": "UNKNOWN"}),
+        (["32"], {}, {"history_excerpt": "브레이크"}),
     ],
 )
 @pytest.mark.asyncio
-async def test_unverified_direct_assignment_goes_to_investigation(triage, changes, shared_target):
+async def test_unverified_direct_assignment_goes_to_investigation(triage, changes, link_changes):
     """An unverified direct link is not a tool failure: LLM1 hands the case to LLM2 instead."""
     tools = BusinessTools()
     door = dict(
@@ -248,7 +248,7 @@ async def test_unverified_direct_assignment_goes_to_investigation(triage, change
     )
     tools.history.append(door)
     model = FullModel(**changes)
-    model.triage_ata, model.shared_target = triage, shared_target
+    model.triage_ata, model.link_changes = triage, link_changes
     result = await run_classify(example_state(), AgentRuntime(model, tools))
     output = result["classification"]
     assert result["agent_context"]["hold"] is None
@@ -280,7 +280,7 @@ def test_history_ata_reads_business_mcp_observations():
 @pytest.mark.asyncio
 async def test_blank_link_reason_drops_the_link_instead_of_failing_the_run():
     tools, model = BusinessTools(), FullModel()
-    model.shared_target = ""
+    model.link_changes = {"current_excerpt": ""}
     result = await run_classify(example_state(), AgentRuntime(model, tools))
     assert result["agent_context"]["hold"] is None
     assert result["classification"].sufficient is False

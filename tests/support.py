@@ -12,6 +12,7 @@ from app.agent.schemas import (
     Evidence,
     Investigation,
     InvestigationAssessment,
+    JudgmentComparison,
     NextStep,
     Review,
     ReviewAssessment,
@@ -357,5 +358,14 @@ class ScriptedDemoModel:
                     supplement_request=None,
                     comments="합성 사례 인계 시험. 실제 정비 판단이 아니다.",
                 )
-            return ReviewAssessment(review=review, additional_evidence=[], technical_basis_ids=[])
+            materials = payload.get("assessments", {})
+            status = "NOT_AVAILABLE" if not materials.get("llm1") else (
+                "RESOLVED_DIFFERENCE" if materials.get("differences") else "CONSISTENT"
+            )
+            return ReviewAssessment(
+                review=review, additional_evidence=[], technical_basis_ids=[],
+                comparison=JudgmentComparison(status=status, rationale="합성 근거 대조.",
+                    evidence_refs=[e["ref_id"] for e in
+                                   payload["latest_investigation"]["evidence"]]),
+            )
         raise AssertionError(schema)
