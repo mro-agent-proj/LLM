@@ -107,6 +107,32 @@ def guard_review(assessment: ReviewAssessment, state: GraphState, context: Agent
         validate_department_ata(output.department, latest.ata_chapter, context)
     except EvidenceValidationError as exc:
         issue = f"{exc} 증상 ATA와 담당 부서의 관계를 재조사하세요."
+    records = {r.ref_id: r for r in context.records}
+    expanded = {
+        ref
+        for ref in final_refs
+        if ref in records
+        and records[ref].source == "SDR"
+        and records[ref].metadata.get("model_key")
+        not in (None, context.applied_scope.get("model_key"))
+    }
+    checks = {item.evidence_id: item for item in assessment.cross_model_reviews}
+    if len(checks) != len(assessment.cross_model_reviews) or not set(checks) <= final_refs:
+        raise EvidenceValidationError("기종 차이 검토 ID는 중복 없이 최종 근거를 참조해야 합니다.")
+    for ref in expanded:
+        check = checks.get(ref)
+        if (
+            check is None
+            or not check.same_target
+            or not check.same_phenomenon
+            or not check.conditions_compatible
+            or not check.rationale.strip()
+            or check.configuration_assessment == "UNRESOLVED"
+        ):
+            issue = (
+                "다른 기종 SDR의 대상·현상·발생 조건과 구성 차이가 "
+                "부서 판단에 미치는 영향을 검토하세요."
+            )
     if issue:
         return output.model_copy(
             update={
