@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.agent.assessments import review_inputs
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import AgentContext, GraphState, InternalHold, NextStep
 from app.agent.tools import ToolGateway, evidence_groups, get_context
@@ -38,8 +39,8 @@ def _plain(value: Any) -> Any:
 
 
 def cited_history(state: GraphState) -> set[str]:
-    """History rows the case actually rests on: LLM1 links and evidence cited by investigations."""
-    ids = set((_plain(state.get("classification")) or {}).get("linked_history_ids") or [])
+    """LLM2's own cited history. LLM1 must not choose or exclude its evidence."""
+    ids = set()
     for investigation in state.get("investigations") or []:
         for item in _plain(investigation).get("evidence") or []:
             if item.get("source") == "HISTORY":
@@ -47,18 +48,22 @@ def cited_history(state: GraphState) -> set[str]:
     return ids
 
 
-def model_records(context: AgentContext, state: GraphState) -> list[dict]:
-    """Every SDR/AMM/document row; history = cited rows + the most recent others (bounded).
-
-    When LLM1 compared the history and linked nothing, those rows were judged unrelated: showing
-    them again let LLM2 cite them instead of searching SDR/AMM, so only cited rows remain.
-    """
+def model_records(
+    context: AgentContext, state: GraphState, stage: str = "INVESTIGATING"
+) -> list[dict]:
+    """Bounded raw evidence; only the reviewer gets LLM1's preferred rows as well."""
     cited = cited_history(state)
-    uncited = [] if llm1_rejected_history(state) else sorted(
+    if stage == "REVIEWING":
+        cited |= set((_plain(state.get("classification")) or {}).get("linked_history_ids") or [])
+    uncited = sorted(
         (r for r in context.records if r.source == "HISTORY" and r.ref_id not in cited),
         key=lambda r: str(r.metadata.get("occurred_at") or r.metadata.get("reported_at") or ""),
         reverse=True,
     )
+    # A page explicitly selected by LLM2/3 must remain visible, even when it is older
+    # than the initial recent-history window. LLM1 never sets this focus.
+    focused = {identifier: i for i, identifier in enumerate(context.history_focus_ids)}
+    uncited.sort(key=lambda r: focused.get(r.ref_id, len(focused)))
     keep = cited | {r.ref_id for r in uncited[:MAX_UNCITED_HISTORY]}
     return [
         {
@@ -72,21 +77,9 @@ def model_records(context: AgentContext, state: GraphState) -> list[dict]:
     ]
 
 
-def llm1_rejected_history(state: GraphState) -> bool:
-    classification = _plain(state.get("classification")) or {}
-    return bool(classification) and not classification.get("linked_history_ids")
-
-
 def citable(record, state: GraphState, cited: set[str]) -> bool:
-    """History LLM1 compared and linked nothing from is not evidence for LLM2.
-
-    AMM rows are reference numbers quoted in SDR text, attached after assignment, never evidence.
-    """
-    if record.source == "AMM":
-        return False
-    if record.source != "HISTORY":
-        return True
-    return record.ref_id in cited or not llm1_rejected_history(state)
+    """Scope-validated HISTORY remains eligible regardless of LLM1's judgment."""
+    return record.source != "AMM"
 
 
 def usable_evidence(context: AgentContext, state: GraphState) -> bool:
@@ -100,16 +93,12 @@ REFERENCE_ONLY_TOOLS = {"search_amm_references", "get_sdr_amm_references"}
 
 
 def hidden_tools(context: AgentContext, state: GraphState, stage: str) -> set[str]:
-    """LLM1 already compared every history page; with no linked row there is nothing to re-read."""
-    linked = (_plain(state.get("classification")) or {}).get("linked_history_ids") or []
-    read_by_llm1 = any(r.source == "HISTORY" for r in context.records)
-    if stage == "INVESTIGATING" and not linked and read_by_llm1:
-        return {"get_aircraft_history", *REFERENCE_ONLY_TOOLS}
+    """Do not let LLM1's conclusion control LLM2's tool catalogue."""
     return set(REFERENCE_ONLY_TOOLS)
 
 
-def omitted_history(context: AgentContext, state: GraphState) -> int:
-    shown = {r["ref_id"] for r in model_records(context, state) if r["source"] == "HISTORY"}
+def omitted_history(context: AgentContext, state: GraphState, stage="INVESTIGATING") -> int:
+    shown = {r["ref_id"] for r in model_records(context, state, stage) if r["source"] == "HISTORY"}
     return sum(r.source == "HISTORY" and r.ref_id not in shown for r in context.records)
 
 
@@ -183,7 +172,6 @@ async def select_evidence(
     system: str,
     stage: str,
 ) -> NextStep:
-    classification = state["classification"]
     latest_review = state["reviews"][-1] if state["reviews"] else None
     reviews = latest_review.model_dump() if isinstance(latest_review, BaseModel) else latest_review
     supplement = reviews.get("supplement_request") if reviews else None
@@ -205,13 +193,12 @@ async def select_evidence(
                 )
             },
             "symptom_text": state["symptom_text"],
-            "classification": classification,
             "investigations": state["investigations"],
             "latest_supplement_request": supplement,
             "retry_count": state["retry_count"],
             "tools": [t for t in gateway.catalogue() if t["name"] not in hidden],
-            "evidence_records": model_records(context, state),
-            "omitted_history_count": omitted_history(context, state),
+            "evidence_records": model_records(context, state, stage),
+            "omitted_history_count": omitted_history(context, state, stage),
             "evidence_groups": evidence_groups(context),
             "request_context": context.request_context,
             "snapshots": context.snapshots,
@@ -220,6 +207,8 @@ async def select_evidence(
             "observations": observations,
             "remaining_tool_calls": runtime.settings.max_tool_calls - gateway.calls,
         }
+        if stage == "REVIEWING":
+            payload["assessments"] = review_inputs(state, context)
         step = await runtime.model.complete(NextStep, system, json_context(payload))
         if (
             step.action == "HOLD"
@@ -264,7 +253,7 @@ async def select_evidence(
                 {
                     "tool": step.tool_name,
                     "error": "TOOL_NOT_OFFERED",
-                    "note": "LLM1이 이 기체의 전체 이력을 이미 비교했고 연결할 이력이 없었다.",
+                    "note": "이 도구는 판단 단계에서 제공하지 않는 참고자료 도구다.",
                 }
             )
             continue
@@ -308,6 +297,8 @@ async def select_evidence(
         seen_calls.add(identity)
         result = await gateway.call(step.tool_name, args, step.question)
         returned = context.traces[-1].item_ids if context.traces else []
+        if step.tool_name == "get_aircraft_history" and result.get("status") == "OK":
+            context.history_focus_ids = returned[:MAX_UNCITED_HISTORY]
         observations.append(
             {
                 "tool": step.tool_name,

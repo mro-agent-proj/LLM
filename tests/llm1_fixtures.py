@@ -34,14 +34,32 @@ class FullModel(ScriptedDemoModel):
         )
         self.output = self.output.model_copy(update=changes)
         self.triage_ata = [self.output.ata_chapter]
-        self.shared_target = "휠 진동"
+        self.link_changes = {}
 
     async def complete(self, schema, system, context):
         data = json.loads(context)
         if schema is ClassificationDecision:
             self.calls.append((schema.__name__, data))
             links = [
-                LinkEvidence(history_id=i, shared_target=self.shared_target)
+                LinkEvidence(
+                    **{
+                        "history_id": i,
+                        "current_excerpt": "휠 진동",
+                        "history_excerpt": "휠 진동",
+                        "current_target": "휠",
+                        "history_target": "휠",
+                        "current_phenomenon": "진동",
+                        "history_phenomenon": "진동",
+                        "target_relation": "SAME",
+                        "phenomenon_relation": "SAME",
+                        "current_assertion": "PRESENT",
+                        "history_assertion": "PRESENT",
+                        "material_conflicts": [],
+                        "uncertainties": [],
+                        "rationale": "같은 휠 진동 현상에 대한 합성 비교.",
+                        **self.link_changes,
+                    }
+                )
                 for i in self.output.linked_history_ids
             ]
             return ClassificationDecision(

@@ -1,6 +1,9 @@
 """LLM1: read business MCP, classify, then validate the model's references."""
 
 import re
+from collections import Counter
+
+from pydantic import ValidationError
 
 from app.agent.classification import (
     CLASSIFY_SYSTEM,
@@ -19,7 +22,12 @@ from app.agent.schemas import (
     GraphState,
     RetrievedRecord,
 )
-from app.agent.tools import EvidenceValidationError, ToolGateway, validate_department
+from app.agent.tools import (
+    EvidenceValidationError,
+    ToolGateway,
+    validate_department,
+    validate_department_ata,
+)
 
 
 def history_ata(record: RetrievedRecord) -> str | None:
@@ -34,36 +42,64 @@ def history_ata(record: RetrievedRecord) -> str | None:
     return None
 
 
-# Phase, place and report words that two unrelated rows share; never a link target on their own.
-GENERIC_TERMS = {
-    "신고", "발견", "정비", "점검", "이상", "불량", "작동", "작동안함", "경고", "표시", "메시지",
-    "결함", "고장", "상부", "하부", "동체", "좌측", "우측", "전방", "후방", "지상", "지상이동",
-    "이동", "순항", "상승", "강하", "착륙", "이륙", "접근", "중", "후", "때", "ecam",
-}
+def history_symptom(record: RetrievedRecord) -> str:
+    """Do not turn text found only in actions/outcome into a historical symptom."""
+    return record.metadata.get("symptom") or record.metadata.get("symptom_text") or ""
 
 
-def _normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip().casefold()
+def verified_quotes(reason: LinkEvidence, record: RetrievedRecord, symptom: str) -> bool:
+    return all(
+        isinstance(quote, str) and 2 <= len(quote.strip()) <= 300 and quote in original
+        for quote, original in (
+            (reason.current_excerpt, symptom),
+            (reason.history_excerpt, history_symptom(record)),
+        )
+    )
 
 
 def supported_links(
     output: Classification, link_evidence: list[LinkEvidence], context: AgentContext, symptom: str
 ) -> list[str]:
-    """Linked rows whose stated shared target really appears in both the symptom and the row."""
+    """Validate source quotes and require an explicit compatible semantic assessment.
+
+    Meaning/polarity is evaluated by the LLM; code verifies provenance and rejects an
+    assessment that itself reports a mismatch, denial or unresolved material conflict.
+    """
     history = {r.ref_id: r for r in context.records if r.source == "HISTORY"}
     reasons = {e.history_id: e for e in link_evidence}
+    counts = Counter(e.history_id for e in link_evidence)
     kept = []
     for identifier in output.linked_history_ids:
         record, reason = history.get(identifier), reasons.get(identifier)
-        if record is None or reason is None or history_ata(record) != output.ata_chapter:
+        if (
+            record is None
+            or reason is None
+            or counts[identifier] != 1
+            or history_ata(record) != output.ata_chapter
+        ):
             continue
-        target = _normalize(reason.shared_target)
-        words = target.split()
-        # "착륙 후", "상부 동체 이상": every word is generic, so it names no target.
-        if len(target.replace(" ", "")) < 2 or all(w in GENERIC_TERMS for w in words):
+        if not verified_quotes(reason, record, symptom):
             continue
-        if target in _normalize(symptom) and target in _normalize(record.content):
-            kept.append(identifier)
+        if not all(
+            value.strip()
+            for value in (
+                reason.current_target,
+                reason.history_target,
+                reason.current_phenomenon,
+                reason.history_phenomenon,
+                reason.rationale,
+            )
+        ):
+            continue
+        if (
+            reason.target_relation not in {"SAME", "RELATED"}
+            or reason.phenomenon_relation not in {"SAME", "RELATED"}
+            or reason.current_assertion != "PRESENT"
+            or reason.history_assertion != "PRESENT"
+            or reason.material_conflicts
+        ):
+            continue
+        kept.append(identifier)
     return kept
 
 
@@ -77,8 +113,21 @@ def validate_classification(output: Classification, context: AgentContext) -> No
     if output.proposed_department is not None:
         validate_department(output.proposed_department, context)
     if output.sufficient:
+        validate_department_ata(output.proposed_department, output.ata_chapter, context)
         if not ids:
             raise EvidenceValidationError("충분한 분류에는 동일 기체 연결 이력이 필요합니다.")
+        try:
+            comparisons = [
+                LinkEvidence.model_validate(
+                    {k: v for k, v in item.items() if k in LinkEvidence.model_fields}
+                )
+                for item in context.classification_comparisons
+            ]
+        except ValidationError as exc:
+            raise EvidenceValidationError("저장된 맥락 비교 형식을 확인할 수 없습니다.") from exc
+        symptom = (context.request_context.get("report") or {}).get("symptom", "")
+        if set(supported_links(output, comparisons, context, symptom)) != set(ids):
+            raise EvidenceValidationError("현재 원문과 저장된 맥락 비교를 확인하지 못했습니다.")
         # A direct assignment links history of the classified system only, never of another ATA.
         if any(history_ata(history[identifier]) != output.ata_chapter for identifier in ids):
             raise EvidenceValidationError("연결 이력의 ATA가 분류한 ATA와 다릅니다.")
@@ -193,13 +242,33 @@ async def run_classify(state: GraphState, runtime: AgentRuntime) -> dict:
                 "request_context": context.request_context,
                 "symptom_ata_candidates": candidates,
                 "symptom_ata_rationale": triage.rationale,
-                "history": sorted(
-                    relevant,
-                    key=lambda r: str(
-                        r.metadata.get("occurred_at") or r.metadata.get("reported_at") or ""
-                    ),
-                    reverse=True,
-                ),
+                "history": [
+                    {
+                        "ref_id": r.ref_id,
+                        "symptom": history_symptom(r),
+                        "ata_chapter": history_ata(r),
+                        **{
+                            k: r.metadata.get(k)
+                            for k in (
+                                "department_id",
+                                "department_code",
+                                "occurred_at",
+                                "reported_at",
+                                "actions",
+                                "action_taken",
+                                "outcome",
+                                "closed_at",
+                            )
+                        },
+                    }
+                    for r in sorted(
+                        relevant,
+                        key=lambda r: str(
+                            r.metadata.get("occurred_at") or r.metadata.get("reported_at") or ""
+                        ),
+                        reverse=True,
+                    )
+                ],
                 "departments": context.departments,
             }
         ),
@@ -211,23 +280,42 @@ async def run_classify(state: GraphState, runtime: AgentRuntime) -> dict:
     ids = output.linked_history_ids
     if len(ids) != len(set(ids)) or not set(ids) <= {r.ref_id for r in context.records}:
         return stop("VALIDATION_FAILED", "조회되지 않았거나 중복된 이력이 연결됐습니다.")
-    # Keep only links whose shared target is verified in both texts; the rest are unrelated rows.
+    # The comparison explains semantic relevance; exact source quotes prove provenance only.
     kept = [
         i
         for i in supported_links(output, decision.link_evidence, context, state["symptom_text"])
         if i in shown
     ]
     direct = output.sufficient and output.ata_chapter in candidates and bool(kept)
+    if direct:
+        try:
+            validate_department_ata(output.proposed_department, output.ata_chapter, context)
+        except EvidenceValidationError:
+            # A known but unsupported department needs investigation, not an invented mapping.
+            if output.proposed_department not in {d["code"] for d in context.departments}:
+                return stop("VALIDATION_FAILED", "조회되지 않은 부서를 제안했습니다.")
+            direct = False
+    records = {r.ref_id: r for r in relevant}
+    context.classification_comparisons = [
+        {
+            **item.model_dump(mode="json"),
+            "accepted": item.history_id in kept,
+            "source_quotes_verified": item.history_id in records
+            and verified_quotes(item, records[item.history_id], state["symptom_text"]),
+        }
+        for item in decision.link_evidence
+    ]
     if output.sufficient and not direct:
         # An unverified direct assignment is not a tool failure: hand the case to LLM2 instead.
         output = output.model_copy(
             update={
-                "ata_chapter": output.ata_chapter if output.ata_chapter in candidates
+                "ata_chapter": output.ata_chapter
+                if output.ata_chapter in candidates
                 else candidates[0],
                 "linked_history_ids": kept,
                 "sufficient": False,
                 "rationale": output.rationale
-                + " [실행기 확인: 같은 대상의 동일 기체 이력을 확인하지 못해 조사 단계로 넘김]",
+                + " [실행기 확인: 맥락·원문·부서 담당 범위가 충분하지 않아 조사로 넘김]",
             }
         )
     else:
@@ -237,12 +325,13 @@ async def run_classify(state: GraphState, runtime: AgentRuntime) -> dict:
     except EvidenceValidationError as exc:
         return stop("VALIDATION_FAILED", str(exc))
     if output.sufficient:
-        records = {r.ref_id: r for r in context.records}
         context.final_evidence = [
             Evidence(
                 source="HISTORY",
                 ref_id=identifier,
-                excerpt=records[identifier].content[:300],
+                excerpt=next(
+                    e.history_excerpt for e in decision.link_evidence if e.history_id == identifier
+                ),
                 why=output.rationale,
             )
             for identifier in output.linked_history_ids

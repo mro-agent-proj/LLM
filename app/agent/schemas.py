@@ -123,6 +123,10 @@ class AgentContext(MaintenanceModel):
     context_refresh_count: int = 0
     superseded_assessments: list[dict[str, Any]] = Field(default_factory=list)
     validated_at: str | None = None
+    # Private semantic assessments; the team's event schemas remain unchanged.
+    classification_comparisons: list[dict[str, Any]] = Field(default_factory=list)
+    review_comparisons: list[dict[str, Any]] = Field(default_factory=list)
+    history_focus_ids: list[str] = Field(default_factory=list)
 
 
 class InvestigationAssessment(MaintenanceModel):
@@ -134,10 +138,21 @@ class InvestigationAssessment(MaintenanceModel):
     )
 
 
+class JudgmentComparison(MaintenanceModel):
+    status: Literal[
+        "NOT_AVAILABLE", "CONSISTENT", "RESOLVED_DIFFERENCE", "UNRESOLVED_DIFFERENCE"
+    ]
+    rationale: str
+    evidence_refs: list[str] = Field(
+        description="대조 결론을 뒷받침하는 조회 근거 ID. PASS 시 최종 인용 근거에 포함해야 한다"
+    )
+
+
 class ReviewAssessment(MaintenanceModel):
     """Review's additional basis must survive final validation and handoff."""
 
     review: Review
+    comparison: JudgmentComparison
     additional_evidence: list[Evidence] = Field(
         description="검토 결론에 사용한 추가 HISTORY/SDR/AMM 근거와 원문 인용. 없으면 빈 목록."
     )

@@ -1,3 +1,4 @@
+from app.agent.assessments import guard_review, review_inputs
 from app.agent.nodes.common import (
     hold_update,
     json_context,
@@ -68,8 +69,9 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
                     )
                 },
                 "latest_investigation": latest,
+                "assessments": review_inputs(state, context),
                 "previous_reviews": state["reviews"],
-                "evidence_records": model_records(context, state),
+                "evidence_records": model_records(context, state, "REVIEWING"),
                 "departments": context.departments,
                 "request_context": context.request_context,
                 "tool_traces": model_traces(context),
@@ -92,9 +94,15 @@ async def run_review(state: GraphState, runtime: AgentRuntime) -> dict:
     try:
         if output.department is not None:
             validate_department(output.department, context)
+        validate_evidence(additional, context)
+        output = guard_review(assessment, state, context)
+        context.review_comparisons.append({
+            **assessment.comparison.model_dump(mode="json"),
+            "attempt": state["retry_count"],
+            "raw_decision": assessment.review.decision, "effective_decision": output.decision,
+        })
         if output.decision == "PASS":
             validate_evidence(latest.evidence, context)
-            validate_evidence(additional, context)
             context.final_evidence = list(
                 {
                     (e.source, e.ref_id, e.excerpt): e
