@@ -1,6 +1,6 @@
 name: Release
 
-# main에서 CI가 성공하면 이 커밋의 산출물을 AWS에 올리고(태그 = 커밋 SHA) 통합 레포에 알립니다.
+# main에서 CI가 성공하면 이 커밋의 산출물을 AWS에 올리고(태그 = 커밋 SHA) 통합 레포(기본 integration, 변수 INTEGRATION_REPO)에 알립니다.
 # 운영 배포는 infra 레포에서만 합니다. AWS·봇 변수가 아직 없으면 해당 job은 건너뜁니다.
 on:
   workflow_run:
@@ -79,9 +79,9 @@ jobs:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: mro-agent-integration
+          repositories: ${{ vars.INTEGRATION_REPO || 'integration' }}
       - env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           payload="$(jq -n --arg repo "${{ github.event.repository.name }}" --arg sha "$SHA" '{event_type: "service-merged", client_payload: {repo: $repo, sha: $sha}}')"
-          echo "$payload" | gh api "repos/${{ github.repository_owner }}/mro-agent-integration/dispatches" --input -
+          echo "$payload" | gh api "repos/${{ github.repository_owner }}/${{ vars.INTEGRATION_REPO || 'integration' }}/dispatches" --input -
