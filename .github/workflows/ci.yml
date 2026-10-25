@@ -26,4 +26,4 @@ jobs:
       - run: uv sync --locked --extra openai
       # 합성 도구·모델로 실행하므로 OpenAI 키·MCP 서버가 필요 없습니다.
       - run: uv run --extra openai pytest -q
-      - run: uv run --extra openai ruff check app tests
+      - run: uv run --extra openai ruff check app tests scripts/evaluation

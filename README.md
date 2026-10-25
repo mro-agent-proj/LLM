@@ -131,6 +131,10 @@ uv run --extra openai ruff check app tests
 
 ## 검증 상태 (2026-10-23)
 
+200건의 [실행 결과·감사 기록·체크섬](https://github.com/mro-agent-proj/deliverables/tree/main/evaluations/2026-10-23-isolated-200)을 공개했습니다.
+[오프라인 재집계·체크포인트 감사 도구](scripts/evaluation/README.md)로 저장된 결과를 확인할 수 있습니다.
+2026-10-26 자료 정리는 재실행이 아니며, 아래 수치는 10월 23일 실행 기준입니다.
+
 상태 격리 적용 버전으로 Backend → RabbitMQ → AI(gpt-5.4-mini) → HTTP MCP → Docker DB의 서비스 평가 200건을 완료했습니다. 단위·회귀 테스트는 173건 통과했습니다. 실제 실행 감사에서는 LLM2 HISTORY 기록·B02 호출이 모두 0건이었습니다.
 
 팀 라벨 기준 전체 통과 97/200, LLM2 마지막 부서 일치 71/82입니다. 정답 부서를 예측하고 보류한 42건은 별도 검토 대상이며 성공에 합산하지 않습니다. 미검토 라벨 161건이 있어 실제 운영 안전성이나 개선 전후 성능으로 일반화하지 않습니다.
