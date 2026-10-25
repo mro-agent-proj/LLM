@@ -1,10 +1,10 @@
 # MRO AI 서버: LLM1 · LLM2 · LLM3
 
-현재 SDR 모델 범위 확장과 서비스 간 적용 순서는 [모델 검색 범위 계약](docs/MODEL_SCOPE.md)을 따른다.
-
 정비 요청을 받아 **증상 분류(LLM1) → 근거 조사(LLM2) → 검토(LLM3)** 를 거쳐 담당 정비 부서를 제안하는 AI 서버입니다.
 FastAPI가 서버 수명과 상태 확인을, LangGraph가 단계 흐름을, LangChain이 모델과 MCP 호출을 맡습니다.
 backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두 개로만 조회합니다. 실제 배정은 backend가 합니다.
+
+> 모델 검색 범위 확장과 서비스 간 적용 순서는 [모델 검색 범위 계약](docs/MODEL_SCOPE.md)을 따릅니다.
 
 ## 전체 구성에서의 위치
 
@@ -21,6 +21,16 @@ backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두
 | [backend](https://github.com/mro-agent-proj/backend) | 요청 상태·배정, 실행 요청 발행, MCP 토큰 발급, 최종 근거 재검증 |
 | [LLM](https://github.com/mro-agent-proj/LLM) | 이 레포 |
 | [agent](https://github.com/mro-agent-proj/agent) | MCP 서버 두 개 (읽기 전용) |
+| [integration](https://github.com/mro-agent-proj/integration) | 서비스 4개의 검증된 커밋 조합, 로컬 실행·평가 스크립트 (봇이 자동 갱신) |
+| [infra](https://github.com/mro-agent-proj/infra) | AWS 인프라(Terraform)와 운영 배포. 배포는 여기서만 합니다 |
+| [deliverables](https://github.com/mro-agent-proj/deliverables) | 최종 결과보고서, 아키텍처 다이어그램 등 산출물 |
+
+## 변경과 배포
+
+1. 이 레포에 PR을 올립니다. main은 PR과 CI 통과가 필수입니다.
+2. main에 병합되면 Release 워크플로가 이 커밋의 이미지를 ECR에(태그 = 커밋 SHA) 올리고 [integration](https://github.com/mro-agent-proj/integration)에 알립니다.
+3. integration이 네 서비스 main을 모아 통합 검증을 통과하면 `verified-*` 태그를 붙입니다.
+4. [infra](https://github.com/mro-agent-proj/infra)에 release PR이 올라오고, 병합·승인하면 운영에 배포됩니다.
 
 ## 흐름
 
