@@ -1,0 +1,87 @@
+name: Release
+
+# main에서 CI가 성공하면 이 커밋의 산출물을 AWS에 올리고(태그 = 커밋 SHA) 통합 레포에 알립니다.
+# 운영 배포는 infra 레포에서만 합니다. AWS·봇 변수가 아직 없으면 해당 job은 건너뜁니다.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
+jobs:
+  image:
+    if: >-
+      vars.AWS_PUSH_ROLE_ARN != '' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - image: ai
+            dockerfile: Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PUSH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      # ECR 태그는 덮어쓸 수 없으므로(IMMUTABLE) 이미 있으면 건너뜁니다
+      - id: exists
+        run: |
+          if aws ecr describe-images --repository-name "mro/${{ matrix.image }}" --image-ids imageTag="$SHA" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "이미 있음: mro/${{ matrix.image }}:$SHA"
+          fi
+      - if: steps.exists.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+      - if: steps.exists.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/mro/${{ matrix.image }}:${{ env.SHA }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # 통합 레포 Sync가 네 서비스 main을 모아 검증합니다
+  notify:
+    needs: image
+    if: >-
+      always() && vars.RELEASE_APP_ID != '' &&
+      (needs.image.result == 'success' || needs.image.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: mro-agent-integration
+      - env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          payload="$(jq -n --arg repo "${{ github.event.repository.name }}" --arg sha "$SHA" '{event_type: "service-merged", client_payload: {repo: $repo, sha: $sha}}')"
+          echo "$payload" | gh api "repos/${{ github.repository_owner }}/mro-agent-integration/dispatches" --input -
