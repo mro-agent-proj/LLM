@@ -2,35 +2,14 @@
 
 정비 요청을 받아 **증상 분류(LLM1) → 근거 조사(LLM2) → 검토(LLM3)** 를 거쳐 담당 정비 부서를 제안하는 AI 서버입니다.
 FastAPI가 서버 수명과 상태 확인을, LangGraph가 단계 흐름을, LangChain이 모델과 MCP 호출을 맡습니다.
-backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두 개로만 조회합니다. 실제 배정은 backend가 합니다.
-
-> 모델 검색 범위 확장과 서비스 간 적용 순서는 [모델 검색 범위 계약](docs/MODEL_SCOPE.md)을 따릅니다.
-
-## 전체 구성에서의 위치
+backend와는 RabbitMQ로 주고받고, 근거는 MCP 서버 두 개로만 조회하며, 실제 배정은 backend가 합니다. 전체 구성·통합 실행은 [integration](https://github.com/mro-agent-proj/integration)을 참고하세요.
 
 ```
-[backend] ──mro.agent.run (+x-mro-business-token, x-mro-rag-token)──▶ [이 레포: AI 서버 :8100]
+[backend] ──mro.agent.run (+x-mro-business-token, x-mro-rag-token)──▶ [AI 서버 :8100]
     ▲                                                                     │  Authorization: Bearer
     └────────────── mro.agent.events (단계·최종 이벤트) ◀──────────────────┤──▶ [business-mcp :8101] B01~B03
                                                                           └──▶ [rag-mcp      :8102] R01~R05, SDR→AMM 조회
 ```
-
-| 레포 | 역할 |
-| --- | --- |
-| [dashboard](https://github.com/mro-agent-proj/dashboard) | 신고자·정비팀·관리자 화면 |
-| [backend](https://github.com/mro-agent-proj/backend) | 요청 상태·배정, 실행 요청 발행, MCP 토큰 발급, 최종 근거 재검증 |
-| [LLM](https://github.com/mro-agent-proj/LLM) | 이 레포 |
-| [agent](https://github.com/mro-agent-proj/agent) | MCP 서버 두 개 (읽기 전용) |
-| [integration](https://github.com/mro-agent-proj/integration) | 서비스 4개의 검증된 커밋 조합, 로컬 실행·평가 스크립트 (봇이 자동 갱신) |
-| [infra](https://github.com/mro-agent-proj/infra) | AWS 인프라(Terraform)와 운영 배포. 배포는 여기서만 합니다 |
-| [deliverables](https://github.com/mro-agent-proj/deliverables) | 최종 결과보고서, 아키텍처 다이어그램 등 산출물 |
-
-## 변경과 배포
-
-1. 이 레포에 PR을 올립니다. main은 PR과 CI 통과가 필수입니다.
-2. main에 병합되면 Release 워크플로가 이 커밋의 이미지를 ECR에(태그 = 커밋 SHA) 올리고 [integration](https://github.com/mro-agent-proj/integration)에 알립니다.
-3. integration이 네 서비스 main을 모아 통합 검증을 통과하면 `verified-*` 태그를 붙입니다.
-4. [infra](https://github.com/mro-agent-proj/infra)에 release PR이 올라오고, 병합·승인하면 운영에 배포됩니다.
 
 ## 흐름
 
@@ -66,8 +45,6 @@ backend와는 RabbitMQ로 주고받고, 근거는 agent 레포의 MCP 서버 두
 | 근거·범위 | 인용 근거가 실제로 조회됐는지, 발췌가 원문에 있는지, 부서 코드가 유효한지, 검색 범위·스냅샷이 바뀌지 않았는지 확인 |
 | AMM | 판단 근거로 쓰지 않음. LLM2·LLM3 도구 목록에서 AMM 도구(R03, SDR→AMM 조회)를 빼고, AMM 인용은 근거에서 제외. 배정 후 실행기가 근거 SDR의 AMM 번호를 조회해 `reference_amm`(SDR 근거 ID, AMM 번호, 인용 문장)으로 붙임. 조회가 실패하거나 도구가 없으면 첨부 없이 배정은 그대로 진행 |
 
-맥락 비교의 내부 필드, 독립 조사 경계, 검증 한계는 [판단 분리 설계](docs/contextual-handoff.md)를 참고합니다.
-
 ## 실행
 
 ### Docker (backend·MCP와 함께)
@@ -80,7 +57,10 @@ docker compose up -d --build
 curl http://127.0.0.1:8100/health/ready   # {"status":"ready",...}
 ```
 
-지표는 `GET /metrics`(Prometheus 형식)로 노출합니다. 실행 결과·사유 `mro_ai_runs_total`, 실행 시간 `mro_ai_run_duration_seconds`, LLM 호출 결과·지연 `mro_ai_llm_calls_total`·`mro_ai_llm_call_duration_seconds`(스키마별, `validation_error` 포함), 도구 호출 `mro_ai_tool_calls_total`·`mro_ai_tool_call_duration_seconds`입니다. 레이블에는 결과 코드·스키마·도구 이름만 담고 요청 본문이나 모델 출력은 담지 않습니다.
+| 경로 | 용도 |
+| --- | --- |
+| `/health/live`, `/health/ready` | 생존, 준비 상태(RabbitMQ 소비자 연결 시 200, 아니면 503) |
+| `/metrics` | Prometheus 지표: 실행 결과·사유 `mro_ai_runs_total`, 실행 시간 `mro_ai_run_duration_seconds`, LLM 호출 결과·지연 `mro_ai_llm_calls_total`·`mro_ai_llm_call_duration_seconds`(스키마별), 도구 호출 `mro_ai_tool_calls_total`·`mro_ai_tool_call_duration_seconds`. 레이블에 요청 본문·모델 출력은 담지 않음 |
 
 Compose는 MCP 주소를 `http://business-mcp:8101/mcp`, `http://rag-mcp:8102/mcp`로 지정하고 backend 네트워크(`BACKEND_NETWORK`, 기본 `backend_default`)에 붙습니다. LLM 호출 키는 AI 서버에 둡니다. RAG 질의 임베딩 키 `RAG_OPENAI_API_KEY`는 별도로 MCP 환경에 설정합니다. `ai-state` 볼륨(체크포인트)을 `down -v`로 지우지 않습니다.
 
@@ -114,8 +94,6 @@ uv run --extra openai mro-worker run      # FastAPI :8100
 
 신규 접수를 멈추고 진행 중 실행·이벤트 처리를 완료한 후 AI 이미지를 재빌드합니다. workflow key는 `llm123-isolated-v2` / `llm23-isolated-v2`이며 이전 key의 체크포인트는 자동 재개하지 않습니다. 기존 DB·큐·AI 상태 볼륨은 보존합니다. 미완료 구버전 요청은 담당자가 기존 처리 결과를 확인한 뒤 복구 절차를 결정해야 합니다.
 
-LLM2에는 LLM3 자유문장 피드백을 그대로 전달하지 않습니다. 재조사는 자신의 RAG 자료와 고정된 독립 재검토 지시를 사용하며, 구체적 피드백 계약은 후속 과제입니다.
-
 ## RabbitMQ와 복구
 
 - backend가 선언한 exchange `mro.agent`, queue `mro.agent.run`을 확인만 하고 새로 선언하지 않습니다.
@@ -131,23 +109,30 @@ uv run --extra openai pytest        # 합성 도구·모델로 실행 (OpenAI·M
 uv run --extra openai ruff check app tests
 ```
 
-## 검증 상태 (2026-10-23)
+## 평가 기록 (2026-10-23)
 
-200건의 [실행 결과·감사 기록·체크섬](https://github.com/mro-agent-proj/deliverables/tree/main/evaluations/2026-10-23-isolated-200)을 공개했습니다.
-[오프라인 재집계·체크포인트 감사 도구](scripts/evaluation/README.md)로 저장된 결과를 확인할 수 있습니다.
-2026-10-26 자료 정리는 재실행이 아니며, 아래 수치는 10월 23일 실행 기준입니다.
+상태 격리 버전으로 Backend → RabbitMQ → AI(gpt-5.4-mini) → HTTP MCP → Docker DB 경로의 서비스 평가 200건을 실행했습니다.
 
-상태 격리 적용 버전으로 Backend → RabbitMQ → AI(gpt-5.4-mini) → HTTP MCP → Docker DB의 서비스 평가 200건을 완료했습니다. 단위·회귀 테스트는 173건 통과했습니다. 실제 실행 감사에서는 LLM2 HISTORY 기록·B02 호출이 모두 0건이었습니다.
+| 지표 | 결과 |
+| --- | --- |
+| 전체 통과 (팀 라벨 기준) | 97/200 |
+| LLM2 마지막 부서 일치 | 71/82 |
+| 정답 부서 예측 후 보류 | 42건 (성공에 합산하지 않음) |
+| 실행 감사: LLM2 HISTORY 기록·B02 호출 | 0건 |
 
-팀 라벨 기준 전체 통과 97/200, LLM2 마지막 부서 일치 71/82입니다. 정답 부서를 예측하고 보류한 42건은 별도 검토 대상이며 성공에 합산하지 않습니다. 미검토 라벨 161건이 있어 실제 운영 안전성이나 개선 전후 성능으로 일반화하지 않습니다.
-
-현재 평가 대상은 Backend `data/eval/service/scenarios.jsonl`의 200건이며, `data/seed/maintenance_history_v2.csv` 1,600건과 함께 사용합니다. 접수 검증 `data/eval/scenario/validation.jsonl` 6건은 별도입니다. 파일 기준과 입력 범위는 [분류 기준의 데이터 안내](docs/classification-criteria.md#현재-목적과-기준-데이터)를 따릅니다.
-
-이전 평가셋의 성적표와 기대 분기는 [과거 기록](docs/archive/legacy-scenarios-2026-10-21.md)으로 분리했습니다. 현재 평가·성능 집계에 사용하지 않습니다.
+- 결과·감사 기록·체크섬: [deliverables](https://github.com/mro-agent-proj/deliverables/tree/main/evaluations/2026-10-23-isolated-200), 오프라인 재집계 도구: [scripts/evaluation](scripts/evaluation/README.md)
+- 평가 입력은 Backend `data/eval/service/scenarios.jsonl` 200건 + `data/seed/maintenance_history_v2.csv` 1,600건입니다([데이터 안내](docs/classification-criteria.md#현재-목적과-기준-데이터)). 이전 평가셋은 [과거 기록](docs/archive/legacy-scenarios-2026-10-21.md)으로 분리했습니다.
+- 미검토 라벨 161건이 있는 단일 실행이므로 운영 안전성이나 개선 전후 성능으로 일반화하지 않습니다.
 
 ## 알려진 한계와 다음 과제
 
-- **LLM1 직접 배정의 근거 연결**: 이번 평가에서 실패 자동배정 49건이 모두 직접 경로에서 발생했습니다. 부서는 맞지만 금지 이력을 인용한 36건, 부서 불일치 11건, 사람 검토 기대인데 배정한 2건을 구분해 개선해야 합니다.
-- **LLM3 보류 사유**: 정답 부서 예측 후 보류한 42건에는 기종 차이 검토 미해소 21건, 기술자료 적용성 확인 11건, ID·인용 검증 실패 10건이 포함됩니다. 실질적인 근거 충돌과 형식 오류를 분리하고, 보류의 적절성을 추가 검토해야 합니다.
-- **평가 한계**: 단일 실행이며 라벨은 미검토 161건·최종 검토 필요 24건·결정 완료 15건입니다. 변경 효과는 고정된 조건의 비교 실행과 별도 미사용 자료로 검증해야 합니다.
-- LLM2·LLM3 노드·프롬프트는 팀원 브랜치(`from-scratch-llm23-service`)에서 통합한 코드이며, 이후 안전장치를 추가했습니다.
+- **LLM1 직접 배정**: 실패 자동배정 49건이 모두 직접 경로였습니다(부서는 맞지만 금지 이력 인용 36, 부서 불일치 11, 사람 검토 기대인데 배정 2).
+- **LLM3 보류 사유**: 정답 부서 예측 후 보류 42건 = 기종 차이 미해소 21, 기술자료 적용성 확인 11, ID·인용 검증 실패 10. 근거 충돌과 형식 오류를 분리해야 합니다.
+- **재조사 피드백**: LLM2에는 LLM3 자유문장을 전달하지 않고 고정된 재검토 지시만 줍니다. 구체적 피드백 계약은 후속 과제입니다.
+- **평가**: 변경 효과는 고정 조건의 비교 실행과 별도 미사용 자료로 검증해야 합니다.
+
+## 문서
+
+- [판단 분리 설계](docs/contextual-handoff.md): 맥락 비교 내부 필드, 독립 조사 경계, 검증 한계
+- [분류 기준](docs/classification-criteria.md): LLM1 판단 기준과 기준 데이터
+- [모델 검색 범위 계약](docs/MODEL_SCOPE.md): 검색 범위 확장과 서비스 간 적용 순서
