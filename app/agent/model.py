@@ -1,10 +1,13 @@
 import asyncio
 import logging
 import os
+import time
 from typing import Any, Protocol, TypeVar
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ValidationError
+
+from app import metrics
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -25,10 +28,14 @@ class LangChainModel:
         runnable = self.model.with_structured_output(schema)
         messages = [SystemMessage(content=system), HumanMessage(content=context)]
         for attempt in range(2):
+            started = time.monotonic()
             try:
                 output = await asyncio.wait_for(runnable.ainvoke(messages), timeout=self.timeout)
-                return output if isinstance(output, schema) else schema.model_validate(output)
+                result = output if isinstance(output, schema) else schema.model_validate(output)
+                metrics.LLM_CALLS.labels(schema.__name__, "ok").inc()
+                return result
             except ValidationError as exc:
+                metrics.LLM_CALLS.labels(schema.__name__, "validation_error").inc()
                 # Field paths and error types only: the offending values may hold model output.
                 logger.warning(
                     "%s output failed validation (attempt %d): %s",
@@ -51,6 +58,14 @@ class LangChainModel:
                         "규칙에 맞게 다시 출력하세요."
                     ),
                 ]
+            except TimeoutError:
+                metrics.LLM_CALLS.labels(schema.__name__, "timeout").inc()
+                raise
+            except Exception:
+                metrics.LLM_CALLS.labels(schema.__name__, "error").inc()
+                raise
+            finally:
+                metrics.LLM_SECONDS.labels(schema.__name__).observe(time.monotonic() - started)
         raise AssertionError("unreachable")
 
 

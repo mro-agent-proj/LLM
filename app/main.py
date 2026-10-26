@@ -6,7 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.agent.model import from_env
 from app.agent.settings import Settings
@@ -83,6 +84,11 @@ def create_app(*, worker_factory=None) -> FastAPI:
                 await resources.aclose()
 
     app = FastAPI(title="MRO AI server", lifespan=lifespan, docs_url=None, redoc_url=None)
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics():
+        # Prometheus scrape: outcomes, latencies and counts only, no request text or model output.
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/health/live")
     async def live():
