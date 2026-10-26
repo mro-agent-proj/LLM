@@ -14,6 +14,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, ToolException
 from pydantic import ValidationError
 
+from app import metrics
 from app.agent.mcp_client import BUSINESS_TOOLS, RAG_TOOLS
 from app.agent.model_scope import allowed_models, default_level, relation, validate_policy
 from app.agent.schemas import AgentContext, GraphState, InternalHold, RetrievedRecord, ToolTrace
@@ -224,6 +225,11 @@ class ToolGateway:
             else "EMPTY"
             if status in {"NO_DATA", "NO_MATCH"}
             else "OK"
+        )
+        metrics.TOOL_CALLS.labels(name, outcome).inc()
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        metrics.TOOL_SECONDS.labels(name).observe(
+            max(0.0, (datetime.now(UTC) - started).total_seconds())
         )
         rows = result.get("items") or (
             [result["result"]] if isinstance(result.get("result"), dict) else []

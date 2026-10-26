@@ -80,6 +80,8 @@ docker compose up -d --build
 curl http://127.0.0.1:8100/health/ready   # {"status":"ready",...}
 ```
 
+지표는 `GET /metrics`(Prometheus 형식)로 노출합니다. 실행 결과·사유 `mro_ai_runs_total`, 실행 시간 `mro_ai_run_duration_seconds`, LLM 호출 결과·지연 `mro_ai_llm_calls_total`·`mro_ai_llm_call_duration_seconds`(스키마별, `validation_error` 포함), 도구 호출 `mro_ai_tool_calls_total`·`mro_ai_tool_call_duration_seconds`입니다. 레이블에는 결과 코드·스키마·도구 이름만 담고 요청 본문이나 모델 출력은 담지 않습니다.
+
 Compose는 MCP 주소를 `http://business-mcp:8101/mcp`, `http://rag-mcp:8102/mcp`로 지정하고 backend 네트워크(`BACKEND_NETWORK`, 기본 `backend_default`)에 붙습니다. LLM 호출 키는 AI 서버에 둡니다. RAG 질의 임베딩 키 `RAG_OPENAI_API_KEY`는 별도로 MCP 환경에 설정합니다. `ai-state` 볼륨(체크포인트)을 `down -v`로 지우지 않습니다.
 
 ### 로컬

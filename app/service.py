@@ -2,12 +2,14 @@
 
 import asyncio
 import logging
+import time
 import traceback
 from datetime import UTC, datetime
 from typing import Protocol
 
 from langgraph.errors import GraphRecursionError
 
+from app import metrics
 from app.agent.full_workflow import build_full_graph
 from app.agent.runtime import AgentRuntime
 from app.messages import RunRequest, event
@@ -79,6 +81,16 @@ class MaintenanceService:
             await deliver(snapshot.values)
             if _terminal(snapshot.values):
                 return _terminal(snapshot.values)["payload"]
+        started_at = time.monotonic()
+        metrics.RUNS_IN_PROGRESS.inc()
+        try:
+            payload = await self._run(graph, config, run, snapshot, deliver)
+        finally:
+            metrics.RUNS_IN_PROGRESS.dec()
+        metrics.record_run(payload, time.monotonic() - started_at)
+        return payload
+
+    async def _run(self, graph, config, run: RunRequest, snapshot, deliver) -> dict:
         previous_events = snapshot.values.get("stage_events", [])
         elapsed = 0.0
         if previous_events and not self.timeout_is_remaining:
