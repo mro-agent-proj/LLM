@@ -39,7 +39,7 @@ backend와는 RabbitMQ로 주고받고, 근거는 MCP 서버 두 개로만 조�
 | LLM2 | 근거와 부서 후보가 있는데 멈추려 하면 한 번 되돌려 보냄. 도구 예산이 끝나도 근거가 있으면 결론 작성 |
 | 도구 예산 | 고정 확인 호출(B01·B03)은 제외하고, AI가 고른 호출만 단계당 `MAX_TOOL_CALLS`회 |
 | 모델 입력 | LLM2는 자체 RAG 자료만 사용. LLM3의 이력 입력은 인용분·추가 조회분과 최근 이력 일부로 제한. 도구 기록은 상태·범위·ID로 요약 |
-| 출력 형식 | 모든 LLM 출력을 pydantic으로 검증. 실패하면 오류 내용을 알려주고 1회 다시 받음. 비어 있는 `NextStep.question`은 행동별 기본 문구로 채움(빈 값 두 번으로 실행이 실패하던 간헐 오류의 원인) |
+| 출력 형식 | 모든 LLM 출력을 pydantic으로 검증. 실패하면 오류 내용을 알려주고 1회 다시 받음. 비어 있는 `NextStep.question`은 행동별 기본 문구로 채움 |
 | 접수 확인 (B01) | LLM1 시작과 최종 확정에 호출하며, 격리된 LLM2도 자체 컨텍스트를 처음 구성할 때 호출. 단계 합류 시 범위·버전·스냅샷 비교 |
 | 실패 로그 | 실행 실패 시 서버 로그에 예외 종류와 코드 위치, 스키마 검증 실패 필드·종류만 남김(모델 응답·키·URL은 남기지 않음) |
 | 근거·범위 | 인용 근거가 실제로 조회됐는지, 발췌가 원문에 있는지, 부서 코드가 유효한지, 검색 범위·스냅샷이 바뀌지 않았는지 확인 |
@@ -109,7 +109,7 @@ uv run --extra openai pytest        # 합성 도구·모델로 실행 (OpenAI·M
 uv run --extra openai ruff check app tests
 ```
 
-## 평가 기록 (2026-10-23)
+## 평가 결과
 
 상태 격리 버전으로 Backend → RabbitMQ → AI(gpt-5.4-mini) → HTTP MCP → Docker DB 경로의 서비스 평가 200건을 실행했습니다.
 
@@ -121,8 +121,7 @@ uv run --extra openai ruff check app tests
 | 실행 감사: LLM2 HISTORY 기록·B02 호출 | 0건 |
 
 - 결과·감사 기록·체크섬: [deliverables](https://github.com/mro-agent-proj/deliverables/tree/main/evaluations/2026-10-23-isolated-200), 오프라인 재집계 도구: [scripts/evaluation](scripts/evaluation/README.md)
-- 평가 입력은 Backend `data/eval/service/scenarios.jsonl` 200건 + `data/seed/maintenance_history_v2.csv` 1,600건입니다([데이터 안내](docs/classification-criteria.md#현재-목적과-기준-데이터)). 이전 평가셋은 [과거 기록](docs/archive/legacy-scenarios-2026-10-21.md)으로 분리했습니다.
-- 미검토 라벨 161건이 있는 단일 실행이므로 운영 안전성이나 개선 전후 성능으로 일반화하지 않습니다.
+- 평가 입력은 Backend `data/eval/service/scenarios.jsonl` 200건 + `data/seed/maintenance_history_v2.csv` 1,600건입니다([데이터 안내](docs/classification-criteria.md#현재-목적과-기준-데이터)).
 
 ## 알려진 한계와 다음 과제
 
